@@ -1,0 +1,33 @@
+{
+  "name": "@omadia/channel-telegram",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && node scripts/copy-ui-assets.mjs",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "@omadia/channel-sdk": "*",
+    "@omadia/orchestrator": "*",
+    "@omadia/plugin-api": "*",
+    "express": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "description": "Telegram channel plugin for the byte5 Harness. Implements @omadia/channel-sdk's ChannelPlugin contract: Bot-API webhook + optional long-polling fallback, MarkdownV2 rendering, inline-keyboard interactives, chat-member roster, and HTTP route for the Telegram webhook endpoint. Self-contained — no depends_on relationship to other integrations.",
+  "license": "MIT"
+}

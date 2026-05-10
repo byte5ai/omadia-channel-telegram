@@ -1,0 +1,101 @@
+schema_version: "1"
+
+identity:
+  id: "de.byte5.channel.telegram"
+  name: "Telegram Channel"
+  version: "0.1.0"
+  kind: "channel"
+  domain: "channel.telegram"
+  description: "Telegram als zweiter First-Class-Channel des byte5 Harness. Speaks die Telegram Bot API direkt (kein Drittanbieter-SDK), supports Webhook + Long-Polling-Fallback, MarkdownV2-Rendering, Inline-Keyboards für Choice-Cards / Slot-Picker / Follow-Ups, Roster via getChatAdministrators für Gruppen. Self-contained — keine `depends_on`-Beziehung. Validiert die @omadia/channel-sdk Contracts gegen ein Runtime ohne Bot-Framework."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "Proprietary"
+  categories:
+    - "channel"
+    - "communication"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+# S+7.7 — Self-contained operator-admin UI bundled in the plugin (vanilla
+# HTML+CSS+JS at dist/ui/index.html, mounted via core.registerRouter).
+# When the plugin is 'active', web-dev's store-detail page embeds this
+# path as an iframe so the operator never leaves the UI to manage pairings,
+# DM bindings, and group activations.
+# Pointing at index.html explicitly avoids the express.static directory
+# redirect (301 → trailing-slash) which Next would surface to the browser
+# as an absolute Location, leaking out of the /bot-api proxy prefix.
+admin_ui_path: "/api/telegram/admin/ui/index.html"
+
+# Telegram is self-contained — no parent integration. Bot token + webhook
+# secret are issued by BotFather (via @BotFather chat) and stored in this
+# plugin's own vault entry.
+depends_on: []
+
+setup:
+  fields:
+    - key: "telegram_public_base_url"
+      type: "string"
+      label: "Public HTTPS Base-URL für den Webhook"
+      help: "Vollständige HTTPS-Origin auf der die Middleware öffentlich erreichbar ist (z.B. `https://bot.example.com`). Telegram registriert den Webhook unter `<base>/api/telegram/webhook` mit dem konfigurierten Secret-Token. Leer lassen → Plugin nutzt Long-Polling (getUpdates) als Fallback — gut für lokale dev ohne ngrok/cloudflared."
+      required: false
+    - key: "dm_policy"
+      type: "string"
+      label: "DM-Auth-Policy"
+      help: "Wer darf den Bot per Direct-Message anschreiben? `pairing` (default ab S+7.6, safer): Nutzer müssen erst via QR-Deeplink-Flow gekoppelt werden, ungebundene DMs bekommen 'Bitte erst koppeln'-Reply. `open`: jeder mit dem Bot-Username darf chatten (Verhalten vor S+7.6). `disabled`: keine DMs zugelassen, Bot ignoriert silent. Group-Auth ist davon unabhängig (Auto-Allowlist beim Bot-Add durch gepairten Operator via `my_chat_member`-Event)."
+      required: false
+      default: "pairing"
+
+playbook:
+  when_to_use: |
+    Der Telegram-Channel wird aktiviert sobald TELEGRAM_BOT_TOKEN und
+    TELEGRAM_WEBHOOK_SECRET in der env vorliegen (oder via Plugin-Vault
+    konfiguriert sind). Endanwender chatten mit dem Bot 1:1 (private)
+    oder in Gruppen/Supergroups; Channel-Posts werden ignoriert. Der
+    Channel ownt /api/telegram/webhook (in HTTPS-Webhook-Modus) oder
+    pollt aktiv via getUpdates (LP-Modus). Gruppen-Roster via
+    getChatAdministrators (Bot-API-Limitierung — non-admin Members
+    bleiben für den Orchestrator unsichtbar).
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound:
+      - "api.telegram.org"
+  filesystem:
+    scratch: false
+
+integrations:
+  - id: "telegram_bot_api"
+    kind: "http"
+    target: "Telegram Bot API (sendMessage, getUpdates, setWebhook, getChatAdministrators)"
+    auth_from: "telegram_bot_token"
+    docs: "https://core.telegram.org/bots/api"
+
+# Capabilities — Telegram is a pure CONSUMER. Channel-handle registration
+# happens via DefaultChannelRegistry, not the ServiceRegistry.
+#
+# Hard-required (capability-resolver enforces these before activate()):
+#   - `chatAgent@^1` — the orchestrator-published ChatAgentBundle. Channel
+#     late-resolves it via `ctx.services.get<ChatAgentBundle>('chatAgent')`
+#     and feeds `bundle.agent` into the TelegramBot. Without it the channel
+#     has nothing to delegate user turns to, so we hard-block (S+10-4b).
+#
+# memoryStore@^1 stays structurally injected via DI (`deps.memoryStore`)
+# because the kernel pre-resolves it once and shares the same instance with
+# the pairing-store helpers. Promotion to `requires:` is deferred — the DI
+# path already gives us the boot-order guarantees we need.
+requires:
+  - "chatAgent@^1"
+provides: []

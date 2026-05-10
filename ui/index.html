@@ -1,0 +1,982 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>byte5 Harness · Telegram Admin</title>
+    <style>
+      :root {
+        --bg: #0e1116;
+        --surface: #181c23;
+        --surface-2: #21262e;
+        --border: #2a3038;
+        --ink: #e7eaee;
+        --ink-soft: #aab3bf;
+        --ink-fade: #6e7782;
+        --accent: #ec5e2a;
+        --accent-soft: #fb8d68;
+        --good: #4ec38a;
+        --warn: #d4a72c;
+        --bad: #e35c5c;
+        --mono: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace;
+        --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI",
+          system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 14px;
+        line-height: 1.5;
+        min-height: 100vh;
+      }
+      a {
+        color: var(--accent-soft);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      button {
+        font: inherit;
+        cursor: pointer;
+        border: none;
+      }
+      input,
+      select,
+      textarea {
+        font: inherit;
+        color: inherit;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 8px 10px;
+      }
+      input:focus,
+      select:focus,
+      textarea:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+      header.app {
+        padding: 18px 28px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        background: var(--surface);
+      }
+      header.app h1 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      header.app .badge {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--ink-soft);
+        padding: 3px 7px;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+      }
+      header.app .badge.bot {
+        color: var(--accent-soft);
+      }
+      header.app .spacer {
+        flex: 1;
+      }
+      header.app button.logout {
+        background: none;
+        color: var(--ink-fade);
+        font-size: 12px;
+        padding: 4px 10px;
+      }
+      header.app button.logout:hover {
+        color: var(--ink);
+      }
+      main {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 28px;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+      section.card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 20px 22px;
+      }
+      section.card h2 {
+        margin: 0 0 14px;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: var(--ink-soft);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      section.card h2::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        background: var(--accent);
+        border-radius: 50%;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 8px 18px;
+        align-items: baseline;
+      }
+      .grid dt {
+        color: var(--ink-fade);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .grid dd {
+        margin: 0;
+        font-family: var(--mono);
+        color: var(--ink);
+      }
+      .pill {
+        display: inline-block;
+        padding: 2px 8px;
+        font-size: 11px;
+        border-radius: 999px;
+        font-family: var(--mono);
+      }
+      .pill.good {
+        background: rgba(78, 195, 138, 0.12);
+        color: var(--good);
+      }
+      .pill.warn {
+        background: rgba(212, 167, 44, 0.12);
+        color: var(--warn);
+      }
+      .pill.bad {
+        background: rgba(227, 92, 92, 0.12);
+        color: var(--bad);
+      }
+      .form-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: white;
+        padding: 9px 14px;
+        border-radius: 4px;
+        font-weight: 600;
+      }
+      .btn-primary:hover {
+        background: var(--accent-soft);
+      }
+      .btn-primary:disabled {
+        background: var(--surface-2);
+        color: var(--ink-fade);
+        cursor: not-allowed;
+      }
+      .btn-danger {
+        background: rgba(227, 92, 92, 0.15);
+        color: var(--bad);
+        padding: 4px 10px;
+        font-size: 12px;
+        border-radius: 3px;
+      }
+      .btn-danger:hover {
+        background: rgba(227, 92, 92, 0.28);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      table th,
+      table td {
+        padding: 9px 8px;
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+      }
+      table th {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--ink-fade);
+        font-weight: 500;
+      }
+      table tr:last-child td {
+        border-bottom: none;
+      }
+      table .mono {
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .empty {
+        color: var(--ink-fade);
+        font-style: italic;
+        padding: 12px 0;
+        text-align: center;
+      }
+      .qr-result {
+        display: grid;
+        grid-template-columns: 200px 1fr;
+        gap: 22px;
+        align-items: start;
+        margin-top: 16px;
+        padding: 18px;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+      }
+      .qr-result .qr-svg {
+        background: white;
+        padding: 12px;
+        border-radius: 4px;
+      }
+      .qr-result .qr-svg svg {
+        display: block;
+        width: 176px;
+        height: 176px;
+      }
+      .qr-result .deeplink {
+        font-family: var(--mono);
+        font-size: 12px;
+        word-break: break-all;
+        background: var(--bg);
+        padding: 10px;
+        border-radius: 3px;
+        margin-top: 8px;
+      }
+      .qr-result .countdown {
+        margin-top: 12px;
+        color: var(--warn);
+        font-size: 12px;
+      }
+      .qr-result .copy-btn {
+        background: var(--surface);
+        color: var(--ink-soft);
+        font-size: 11px;
+        padding: 4px 10px;
+        border-radius: 3px;
+        margin-top: 6px;
+      }
+      .qr-result .copy-btn:hover {
+        color: var(--ink);
+        background: var(--border);
+      }
+      .login-screen {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 28px;
+      }
+      .login-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 32px;
+        width: 100%;
+        max-width: 420px;
+      }
+      .login-card h1 {
+        margin: 0 0 6px;
+        font-size: 18px;
+      }
+      .login-card p.sub {
+        margin: 0 0 24px;
+        color: var(--ink-soft);
+        font-size: 13px;
+      }
+      .login-card label {
+        display: block;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--ink-fade);
+        margin-bottom: 6px;
+      }
+      .login-card input[type="password"] {
+        width: 100%;
+        font-family: var(--mono);
+      }
+      .login-card .err {
+        color: var(--bad);
+        font-size: 12px;
+        margin-top: 10px;
+      }
+      .login-card button {
+        margin-top: 16px;
+        width: 100%;
+      }
+      .login-card .hint {
+        margin-top: 16px;
+        padding: 10px;
+        background: var(--surface-2);
+        border-left: 2px solid var(--accent);
+        font-size: 12px;
+        color: var(--ink-soft);
+        line-height: 1.55;
+      }
+      .login-card .hint code {
+        font-family: var(--mono);
+        background: var(--bg);
+        padding: 1px 5px;
+        border-radius: 2px;
+        color: var(--accent-soft);
+      }
+      .toast {
+        position: fixed;
+        right: 28px;
+        bottom: 28px;
+        padding: 10px 16px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        font-size: 13px;
+        max-width: 360px;
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+        opacity: 0;
+        transform: translateY(8px);
+        transition: opacity 160ms, transform 160ms;
+        pointer-events: none;
+      }
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+      .toast.error {
+        border-color: var(--bad);
+        color: var(--bad);
+      }
+      .toast.ok {
+        border-color: var(--good);
+        color: var(--good);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="toast" class="toast"></div>
+    <script type="module">
+      // ---------------------------------------------------------------
+      // Constants + storage
+      // ---------------------------------------------------------------
+      const TOKEN_KEY = "telegram-admin-token";
+      const POLL_MS = 5000;
+      const ADMIN_BASE = ".."; // relative — UI lives at /api/telegram/admin/ui/
+      const root = document.getElementById("root");
+      const toast = document.getElementById("toast");
+
+      // ---------------------------------------------------------------
+      // Tiny DOM helpers — no framework, just element factories.
+      // ---------------------------------------------------------------
+      function el(tag, attrs = {}, ...children) {
+        const node = document.createElement(tag);
+        for (const [k, v] of Object.entries(attrs)) {
+          if (k === "class") node.className = v;
+          else if (k === "html") node.innerHTML = v;
+          else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+          else if (v === true) node.setAttribute(k, "");
+          else if (v !== false && v != null) node.setAttribute(k, v);
+        }
+        for (const c of children.flat()) {
+          if (c == null || c === false) continue;
+          node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+        }
+        return node;
+      }
+      function clear(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+      function showToast(msg, kind = "ok") {
+        toast.textContent = msg;
+        toast.className = `toast show ${kind}`;
+        setTimeout(() => toast.classList.remove("show"), 3200);
+      }
+      function fmtDateRelative(iso) {
+        const d = new Date(iso);
+        const diff = Date.now() - d.getTime();
+        const min = Math.floor(diff / 60000);
+        if (min < 1) return "vor wenigen Sek.";
+        if (min < 60) return `vor ${min} Min.`;
+        const h = Math.floor(min / 60);
+        if (h < 24) return `vor ${h} Std.`;
+        return d.toLocaleString();
+      }
+
+      // ---------------------------------------------------------------
+      // API client — wraps fetch, attaches bearer, throws on non-2xx.
+      // ---------------------------------------------------------------
+      function api() {
+        const token = localStorage.getItem(TOKEN_KEY);
+        async function call(path, opts = {}) {
+          const res = await fetch(`${ADMIN_BASE}${path}`, {
+            ...opts,
+            headers: {
+              accept: "application/json",
+              ...(opts.body
+                ? { "content-type": "application/json" }
+                : {}),
+              ...(token ? { authorization: `Bearer ${token}` } : {}),
+              ...(opts.headers || {}),
+            },
+          });
+          if (res.status === 401) {
+            localStorage.removeItem(TOKEN_KEY);
+            renderLogin("Token ungültig oder abgelaufen.");
+            throw new Error("unauthorized");
+          }
+          if (!res.ok) {
+            const txt = await res.text().catch(() => "");
+            throw new Error(`${res.status} ${txt || res.statusText}`);
+          }
+          if (res.status === 204) return null;
+          return res.json();
+        }
+        return {
+          info: () => call("/info"),
+          listPairings: () => call("/pairings"),
+          issuePairing: (body) =>
+            call("/pairings", { method: "POST", body: JSON.stringify(body) }),
+          listDmBindings: () => call("/bindings/dm"),
+          revokeDm: (id) =>
+            call(`/bindings/dm/${id}`, { method: "DELETE" }),
+          listGroups: () => call("/bindings/groups"),
+          deactivateGroup: (id) =>
+            call(`/bindings/groups/${id}`, { method: "DELETE" }),
+        };
+      }
+
+      // ---------------------------------------------------------------
+      // Login screen
+      // ---------------------------------------------------------------
+      function renderLogin(errMsg) {
+        clear(root);
+        const input = el("input", {
+          type: "password",
+          placeholder: "64-stelliger hex-Token",
+          autofocus: true,
+        });
+        const errBox = el("p", { class: "err" }, errMsg ?? "");
+        const submit = async () => {
+          const value = input.value.trim();
+          if (!value) {
+            errBox.textContent = "Token darf nicht leer sein.";
+            return;
+          }
+          localStorage.setItem(TOKEN_KEY, value);
+          try {
+            await api().info();
+            renderApp();
+          } catch (err) {
+            // api().info handled 401-clear + renderLogin already
+            if (err.message !== "unauthorized") {
+              errBox.textContent = err.message;
+            }
+          }
+        };
+        const btn = el(
+          "button",
+          {
+            class: "btn-primary",
+            onclick: submit,
+          },
+          "Login",
+        );
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") submit();
+        });
+        const card = el(
+          "div",
+          { class: "login-card" },
+          el("h1", {}, "Telegram Admin"),
+          el(
+            "p",
+            { class: "sub" },
+            "Operator-Login für den byte5 Harness Telegram-Channel.",
+          ),
+          el("label", { for: "token" }, "telegram_admin_token"),
+          input,
+          errBox,
+          btn,
+          el(
+            "div",
+            { class: "hint" },
+            "Token wird beim ersten Boot der Middleware geloggt (Suche nach ",
+            el("code", {}, "telegram_admin_token"),
+            "). Alternativ via Vault-Inspection lesbar.",
+          ),
+        );
+        root.appendChild(el("div", { class: "login-screen" }, card));
+      }
+
+      // ---------------------------------------------------------------
+      // App shell — header + sections
+      // ---------------------------------------------------------------
+      let pollTimer = null;
+      async function renderApp() {
+        clear(root);
+        if (pollTimer) clearInterval(pollTimer);
+        const apiClient = api();
+        const info = await apiClient.info();
+
+        const headerEl = el(
+          "header",
+          { class: "app" },
+          el("h1", {}, "Telegram Admin"),
+          el("span", { class: "badge bot" }, `@${info.bot.username}`),
+          el(
+            "span",
+            { class: "badge" },
+            `id ${info.bot.id}`,
+          ),
+          el(
+            "span",
+            { class: "badge" },
+            `mode: ${info.webhookMode}`,
+          ),
+          el(
+            "span",
+            { class: "badge" },
+            `dmPolicy: ${info.dmPolicy}`,
+          ),
+          el("div", { class: "spacer" }),
+          el(
+            "button",
+            {
+              class: "logout",
+              onclick: () => {
+                localStorage.removeItem(TOKEN_KEY);
+                renderLogin();
+              },
+            },
+            "Logout",
+          ),
+        );
+
+        const main = el(
+          "main",
+          {},
+          renderPairingForm(apiClient, info),
+          renderTablesSection(apiClient),
+        );
+        root.appendChild(headerEl);
+        root.appendChild(main);
+        pollTimer = setInterval(() => refreshTables(apiClient), POLL_MS);
+        await refreshTables(apiClient);
+      }
+
+      // ---------------------------------------------------------------
+      // Pairing form + result panel
+      // ---------------------------------------------------------------
+      function renderPairingForm(apiClient, info) {
+        const idInput = el("input", {
+          type: "text",
+          placeholder: "z.B. marcel-wege",
+          required: true,
+        });
+        const labelInput = el("input", {
+          type: "text",
+          placeholder: "z.B. Marcel Wege",
+          required: true,
+        });
+        const resultBox = el("div", {});
+        const btn = el(
+          "button",
+          { class: "btn-primary", type: "submit" },
+          "Pairing-Token erzeugen",
+        );
+
+        const form = el(
+          "form",
+          {
+            onsubmit: async (e) => {
+              e.preventDefault();
+              const harnessIdentityId = idInput.value.trim();
+              const harnessIdentityLabel = labelInput.value.trim();
+              if (!harnessIdentityId || !harnessIdentityLabel) {
+                showToast("Beide Felder ausfüllen.", "error");
+                return;
+              }
+              btn.disabled = true;
+              try {
+                const issued = await apiClient.issuePairing({
+                  harnessIdentityId,
+                  harnessIdentityLabel,
+                });
+                renderPairingResult(resultBox, issued, info);
+                showToast("Token erstellt — gilt 120 Sek.", "ok");
+                idInput.value = "";
+                labelInput.value = "";
+              } catch (err) {
+                showToast(err.message, "error");
+              } finally {
+                btn.disabled = false;
+              }
+            },
+          },
+          el(
+            "div",
+            { class: "form-row" },
+            el(
+              "div",
+              {},
+              el("label", { for: "id" }, "Harness Identity ID"),
+              idInput,
+            ),
+            el(
+              "div",
+              {},
+              el("label", { for: "label" }, "Anzeige-Name"),
+              labelInput,
+            ),
+          ),
+          btn,
+          resultBox,
+        );
+        return el(
+          "section",
+          { class: "card" },
+          el("h2", {}, "Neues Pairing"),
+          form,
+        );
+      }
+
+      function renderPairingResult(host, issued, info) {
+        clear(host);
+        const left = info.qrEnabled && issued.qrSvg
+          ? el("div", { class: "qr-svg", html: issued.qrSvg })
+          : el(
+              "div",
+              { class: "qr-svg" },
+              el(
+                "div",
+                {
+                  style:
+                    "color:#888;font-size:11px;text-align:center;padding:32px 8px;",
+                },
+                "QR nicht verfügbar — Deeplink kopieren.",
+              ),
+            );
+
+        const copyBtn = el(
+          "button",
+          {
+            class: "copy-btn",
+            onclick: async () => {
+              try {
+                await navigator.clipboard.writeText(issued.deeplink);
+                showToast("Deeplink kopiert.", "ok");
+              } catch {
+                showToast("Clipboard nicht verfügbar.", "error");
+              }
+            },
+          },
+          "Deeplink kopieren",
+        );
+
+        const countdown = el("div", { class: "countdown" }, "");
+        const expires = new Date(issued.expiresAt).getTime();
+        const tick = () => {
+          const ms = expires - Date.now();
+          if (ms <= 0) {
+            countdown.textContent = "Token abgelaufen.";
+            countdown.style.color = "var(--bad)";
+            return;
+          }
+          const sec = Math.ceil(ms / 1000);
+          countdown.textContent = `Gültig noch ${sec}s.`;
+        };
+        tick();
+        const t = setInterval(() => {
+          tick();
+          if (expires - Date.now() <= 0) clearInterval(t);
+        }, 1000);
+
+        host.appendChild(
+          el(
+            "div",
+            { class: "qr-result" },
+            left,
+            el(
+              "div",
+              {},
+              el(
+                "div",
+                {},
+                el(
+                  "strong",
+                  {},
+                  `Pairing für „${issued.harnessIdentityLabel}"`,
+                ),
+              ),
+              el(
+                "div",
+                { style: "font-size:12px;color:var(--ink-soft);margin-top:4px;" },
+                'User scannt den QR mit Telegram, klickt „Start“, ist verbunden.',
+              ),
+              el("div", { class: "deeplink" }, issued.deeplink),
+              copyBtn,
+              countdown,
+            ),
+          ),
+        );
+      }
+
+      // ---------------------------------------------------------------
+      // Tables section (DM bindings + group activations)
+      // ---------------------------------------------------------------
+      let dmTbody, groupTbody;
+      function renderTablesSection(apiClient) {
+        dmTbody = el("tbody");
+        groupTbody = el("tbody");
+        return el(
+          "section",
+          { class: "card" },
+          el("h2", {}, "Aktive Verbindungen"),
+          el(
+            "div",
+            {
+              style:
+                "font-size:12px;color:var(--ink-fade);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.08em;",
+            },
+            "DM Bindings",
+          ),
+          el(
+            "table",
+            {},
+            el(
+              "thead",
+              {},
+              el(
+                "tr",
+                {},
+                el("th", {}, "Telegram User"),
+                el("th", {}, "Harness Identity"),
+                el("th", {}, "Verbunden seit"),
+                el("th", {}, ""),
+              ),
+            ),
+            dmTbody,
+          ),
+          el(
+            "div",
+            {
+              style:
+                "font-size:12px;color:var(--ink-fade);margin:18px 0 6px;text-transform:uppercase;letter-spacing:0.08em;",
+            },
+            "Gruppen-Aktivierungen",
+          ),
+          el(
+            "table",
+            {},
+            el(
+              "thead",
+              {},
+              el(
+                "tr",
+                {},
+                el("th", {}, "Gruppe"),
+                el("th", {}, "Typ"),
+                el("th", {}, "Aktiviert von"),
+                el("th", {}, "Aktiviert"),
+                el("th", {}, ""),
+              ),
+            ),
+            groupTbody,
+          ),
+        );
+      }
+
+      async function refreshTables(apiClient) {
+        try {
+          const [dmRes, groupRes] = await Promise.all([
+            apiClient.listDmBindings(),
+            apiClient.listGroups(),
+          ]);
+          renderDmTable(apiClient, dmRes.bindings);
+          renderGroupTable(apiClient, groupRes.groups);
+        } catch (err) {
+          if (err.message !== "unauthorized") {
+            showToast(`Refresh fehlgeschlagen: ${err.message}`, "error");
+          }
+        }
+      }
+
+      function renderDmTable(apiClient, bindings) {
+        clear(dmTbody);
+        if (bindings.length === 0) {
+          dmTbody.appendChild(
+            el(
+              "tr",
+              {},
+              el(
+                "td",
+                { colspan: 4 },
+                el("div", { class: "empty" }, "Keine aktiven DM-Bindings."),
+              ),
+            ),
+          );
+          return;
+        }
+        for (const b of bindings) {
+          dmTbody.appendChild(
+            el(
+              "tr",
+              {},
+              el(
+                "td",
+                { class: "mono" },
+                b.telegramUsername
+                  ? `@${b.telegramUsername}`
+                  : `id:${b.telegramUserId}`,
+                el(
+                  "div",
+                  { style: "color:var(--ink-fade);font-size:11px;" },
+                  b.telegramDisplayName ?? "",
+                ),
+              ),
+              el(
+                "td",
+                {},
+                b.harnessIdentityLabel,
+                el(
+                  "div",
+                  {
+                    class: "mono",
+                    style: "color:var(--ink-fade);font-size:11px;",
+                  },
+                  b.harnessIdentityId,
+                ),
+              ),
+              el("td", {}, fmtDateRelative(b.boundAt)),
+              el(
+                "td",
+                {},
+                el(
+                  "button",
+                  {
+                    class: "btn-danger",
+                    onclick: async () => {
+                      if (!confirm(`Binding für ${b.harnessIdentityLabel} entfernen?`)) return;
+                      try {
+                        await apiClient.revokeDm(b.telegramUserId);
+                        showToast("Binding entfernt.", "ok");
+                        await refreshTables(apiClient);
+                      } catch (err) {
+                        showToast(err.message, "error");
+                      }
+                    },
+                  },
+                  "Revoke",
+                ),
+              ),
+            ),
+          );
+        }
+      }
+
+      function renderGroupTable(apiClient, groups) {
+        clear(groupTbody);
+        if (groups.length === 0) {
+          groupTbody.appendChild(
+            el(
+              "tr",
+              {},
+              el(
+                "td",
+                { colspan: 5 },
+                el(
+                  "div",
+                  { class: "empty" },
+                  "Keine aktiven Gruppen-Aktivierungen.",
+                ),
+              ),
+            ),
+          );
+          return;
+        }
+        for (const g of groups) {
+          groupTbody.appendChild(
+            el(
+              "tr",
+              {},
+              el(
+                "td",
+                {},
+                g.chatTitle,
+                el(
+                  "div",
+                  { class: "mono", style: "color:var(--ink-fade);font-size:11px;" },
+                  `id:${g.chatId}`,
+                ),
+              ),
+              el("td", {}, el("span", { class: "pill good" }, g.chatType)),
+              el("td", { class: "mono" }, g.activatedBy),
+              el("td", {}, fmtDateRelative(g.activatedAt)),
+              el(
+                "td",
+                {},
+                el(
+                  "button",
+                  {
+                    class: "btn-danger",
+                    onclick: async () => {
+                      if (
+                        !confirm(`Gruppe „${g.chatTitle}" deaktivieren?`)
+                      )
+                        return;
+                      try {
+                        await apiClient.deactivateGroup(g.chatId);
+                        showToast("Gruppe deaktiviert.", "ok");
+                        await refreshTables(apiClient);
+                      } catch (err) {
+                        showToast(err.message, "error");
+                      }
+                    },
+                  },
+                  "Deaktivieren",
+                ),
+              ),
+            ),
+          );
+        }
+      }
+
+      // ---------------------------------------------------------------
+      // Bootstrap: try existing token, otherwise show login.
+      // ---------------------------------------------------------------
+      (async function init() {
+        const t = localStorage.getItem(TOKEN_KEY);
+        if (!t) {
+          renderLogin();
+          return;
+        }
+        try {
+          await api().info();
+          renderApp();
+        } catch (err) {
+          // 401 already handled by api wrapper.
+          if (err.message !== "unauthorized") {
+            renderLogin(err.message);
+          }
+        }
+      })();
+    </script>
+  </body>
+</html>
