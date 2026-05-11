@@ -1,7 +1,7 @@
 schema_version: "1"
 
 identity:
-  id: "de.byte5.channel.telegram"
+  id: "@omadia/channel-telegram"
   name: "Telegram Channel"
   version: "0.1.0"
   kind: "channel"
