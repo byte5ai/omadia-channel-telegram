@@ -5,8 +5,10 @@
 // Self-contained: no depends_on chain. Bot token + webhook secret live in
 // the plugin's own vault entry; webhook public base URL is plugin config.
 
-export { TelegramChannelPlugin } from './plugin.js';
-export type { TelegramChannelPluginDeps } from './plugin.js';
+// Phase 5B: standalone activate() shape replaces the legacy class. The
+// dynamic-channel-resolver picks `activate` off the module export
+// (`mod.activate ?? mod.default?.activate ?? mod.default`).
+export { activate } from './plugin.js';
 
 export {
   TelegramApiClient,
