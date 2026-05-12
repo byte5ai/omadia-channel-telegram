@@ -21,6 +21,7 @@
  * - Trace panel rendering (skip the runTrace summary)
  */
 
+import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
 import { evaluateDmPolicy, type DmPolicy } from './dmPolicyGuard.js';
 import type {
   ChatAgent,
@@ -949,6 +950,15 @@ export class TelegramBot {
             : {}),
           userTimeZone: 'Europe/Berlin',
         });
+
+        if (isNoReply(result)) {
+          logNoReplyDrop('telegram', {
+            chatId: input.chat.id,
+            userId,
+            sessionScope,
+          });
+          return;
+        }
 
         await this.renderer.renderAnswer(input.chat.id, result);
 
