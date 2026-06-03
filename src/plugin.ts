@@ -24,7 +24,9 @@ import { fileURLToPath } from 'node:url';
 import express, { Router } from 'express';
 import type { PluginContext, MemoryStore } from '@omadia/plugin-api';
 import {
+  CHANNEL_RESOLVER_SERVICE,
   InMemoryConversationHistoryStore,
+  type ChannelBindingResolver,
   type ChannelHandle,
   type CoreApi,
 } from '@omadia/channel-sdk';
@@ -122,9 +124,30 @@ export async function activate(
   const pairingStore = new PairingStore(memoryStore);
   core.log('info', 'telegram pairing store ready (memoryStore-backed)');
 
+  // --- Per-turn Agent resolution (US7) ---------------------------------
+  // Late-resolved channelResolver@1: when the multi-orchestrator registry is
+  // active AND the operator bound this Telegram bot (or a specific chat) to an
+  // Agent in /operator/channels, each inbound turn routes to that scoped
+  // Agent. Without the resolver service the bot falls back to the default
+  // chatAgent@1 (the `chatAgent` constant captured above).
+  const channelResolver = ctx.services.get<ChannelBindingResolver>(
+    CHANNEL_RESOLVER_SERVICE,
+  );
+  const resolveChatAgentForActivity = channelResolver
+    ? (input: { channelType: 'telegram'; channelKey: string }) =>
+        channelResolver.resolve(input.channelType, input.channelKey)
+    : undefined;
+  core.log(
+    'info',
+    resolveChatAgentForActivity
+      ? 'Telegram per-turn Agent resolution active via channelResolver@1'
+      : 'channelResolver@1 not published — Telegram routes all turns to default chatAgent',
+  );
+
   const bot = new TelegramBot({
     api,
     chatAgent,
+    ...(resolveChatAgentForActivity ? { resolveChatAgentForActivity } : {}),
     history: conversationHistoryStore,
     turnContext,
     rosterProvider: (chatId) => rosterProvider.forChat(chatId),
