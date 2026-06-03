@@ -341,6 +341,26 @@ export interface TelegramBotOptions {
    * against legacy-group filtering quirks.
    */
   botIdentity: { id: number; username: string };
+  /**
+   * US7 per-turn Agent resolution. Given a `(channelType, channelKey)` the
+   * kernel's `channelResolver@1` reports which Agent owns the binding. The bot
+   * tries the chat id first (a chat-scoped binding), then the bot username
+   * (the bot-level catch-all); on a `'bound'` decision it routes the turn to
+   * that scoped Agent, otherwise it accepts the platform `'fallback'` Agent,
+   * otherwise the default `chatAgent`. Unset (no multi-orchestrator registry /
+   * pre-Phase-A boot) → every turn uses the default agent, exactly as before.
+   *
+   * Wired in `plugin.ts` from the `channelResolver@1` service; errors are
+   * swallowed by the bot (logged, default agent used) so a resolver hiccup
+   * never drops a turn.
+   */
+  resolveChatAgentForActivity?: (input: {
+    readonly channelType: 'telegram';
+    readonly channelKey: string;
+  }) => {
+    readonly decision: 'bound' | 'fallback' | 'reject';
+    readonly chatAgent?: ChatAgent;
+  };
 }
 
 const DEFAULT_CALLBACK_TTL_MS = 10 * 60 * 1000; // 10 min
@@ -358,6 +378,15 @@ export class TelegramBot {
   private readonly pairingTokens: PairingTokenRegistry;
   private readonly dmPolicy: DmPolicy;
   private readonly botIdentity: { id: number; username: string };
+  private readonly resolveChatAgentForActivity?: TelegramBotOptions['resolveChatAgentForActivity'];
+  /**
+   * Per-turn resolved ChatAgent for the current {@link runTurn}. Set once at
+   * the top of the turn from {@link resolveChatAgentForActivity} (or left
+   * undefined → the default `chatAgent`); read at the chat invocation. Per-turn
+   * scope means concurrent turns won't trample each other under normal load
+   * (one event-loop tick per webhook delivery).
+   */
+  private currentChatAgent: ChatAgent | undefined;
 
   constructor(opts: TelegramBotOptions) {
     this.api = opts.api;
@@ -373,6 +402,55 @@ export class TelegramBot {
     this.pairingTokens = opts.pairingTokens;
     this.dmPolicy = opts.dmPolicy ?? 'pairing';
     this.botIdentity = opts.botIdentity;
+    this.resolveChatAgentForActivity = opts.resolveChatAgentForActivity;
+  }
+
+  /**
+   * US7 — pick the ChatAgent the operator bound to this turn's channel, set on
+   * {@link currentChatAgent} for the rest of the turn so a binding edit
+   * mid-turn never swaps the agent under it. Called once at the top of
+   * {@link runTurn}.
+   *
+   * Key candidates, most-specific first:
+   *   1. the numeric chat id (a chat-scoped binding), then
+   *   2. `@<bot_username>` and the bare `<bot_username>` (the bot-level
+   *      catch-all the operator binds in `channel_bindings`).
+   * These are the key formats the SDK documents for Telegram, so what the
+   * operator binds IS what the resolver matches at runtime.
+   */
+  private resolveChatAgentForTurn(chat: TelegramChat): void {
+    this.currentChatAgent = undefined;
+    if (!this.resolveChatAgentForActivity) return;
+
+    const keysToTry: string[] = [String(chat.id)];
+    const username = this.botIdentity.username;
+    if (username) keysToTry.push(`@${username}`, username);
+
+    let fallbackCandidate: ChatAgent | undefined;
+    try {
+      for (const channelKey of keysToTry) {
+        const decision = this.resolveChatAgentForActivity({
+          channelType: 'telegram',
+          channelKey,
+        });
+        if (decision.decision === 'bound' && decision.chatAgent) {
+          this.currentChatAgent = decision.chatAgent;
+          return;
+        }
+        if (decision.decision === 'fallback' && decision.chatAgent) {
+          // Remember the platform fallback but keep checking less-specific
+          // keys — the bot username might still be explicitly bound.
+          fallbackCandidate ??= decision.chatAgent;
+        }
+      }
+      this.currentChatAgent = fallbackCandidate;
+    } catch (err) {
+      console.error(
+        `[telegram] channelResolver threw (chat=${String(chat.id)}) — falling back to default agent:`,
+        err,
+      );
+      this.currentChatAgent = undefined;
+    }
   }
 
   /** Single entry-point — dispatches on update.message / callback_query / my_chat_member. */
@@ -917,6 +995,10 @@ export class TelegramBot {
       ? `telegram:${String(input.from.id)}`
       : undefined;
 
+    // US7 — resolve the Agent bound to this chat/bot for the whole turn.
+    this.resolveChatAgentForTurn(input.chat);
+    const chatAgent = this.currentChatAgent ?? this.chatAgent;
+
     const isGroup =
       input.chat.type === 'group' || input.chat.type === 'supergroup';
     const rosterProvider =
@@ -933,7 +1015,7 @@ export class TelegramBot {
         `[telegram] turn start chat=${String(input.chat.id)} type=${input.chat.type} user=${userId ?? 'anon'} history=${String(priorTurns.length)} roster=${rosterProvider ? 'on' : 'off'} attach=${String(attachCount)}`,
       );
       try {
-        const result = await this.chatAgent.chat({
+        const result = await chatAgent.chat({
           userMessage: input.userMessage,
           sessionScope,
           ...(userId ? { userId } : {}),
