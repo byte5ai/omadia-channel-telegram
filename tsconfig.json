@@ -19,7 +19,12 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "composite": true
+    "composite": true,
+    "paths": {
+      "@omadia/plugin-api": ["../odoo-bot/middleware/packages/plugin-api/dist/index.d.ts"],
+      "@omadia/channel-sdk": ["../odoo-bot/middleware/packages/harness-channel-sdk/dist/index.d.ts"],
+      "@omadia/orchestrator": ["../odoo-bot/middleware/packages/harness-orchestrator/dist/index.d.ts"]
+    }
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist"]
