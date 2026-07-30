@@ -3,10 +3,10 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-telegram"
   name: "Telegram Channel"
-  version: "0.1.4"
+  version: "0.1.5"
   kind: "channel"
   domain: "channel.telegram"
-  description: "Telegram als zweiter First-Class-Channel von Omadia. Speaks die Telegram Bot API direkt (kein Drittanbieter-SDK), supports Webhook + Long-Polling-Fallback, MarkdownV2-Rendering, Inline-Keyboards für Choice-Cards / Slot-Picker / Follow-Ups, Roster via getChatAdministrators für Gruppen. Self-contained — keine `depends_on`-Beziehung. Validiert die @omadia/channel-sdk Contracts gegen ein Runtime ohne Bot-Framework."
+  description: "Telegram als zweiter First-Class-Channel von Omadia. Spricht die Telegram Bot API direkt (kein Drittanbieter-SDK), supports Webhook + Long-Polling-Fallback, MarkdownV2-Rendering, Inline-Keyboards für Choice-Cards / Slot-Picker / Follow-Ups, Roster via getChatAdministrators für Gruppen. Self-contained — keine `depends_on`-Beziehung. Validiert die @omadia/channel-sdk Contracts gegen ein Runtime ohne Bot-Framework."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -93,6 +93,11 @@ setup:
       dem Username) oder `disabled`. Gruppen-Zugriff wird separat geregelt, wenn
       ein gekoppelter Operator den Bot in eine Gruppe hinzufügt.
   fields:
+    - key: "telegram_bot_token"
+      type: "secret"
+      label: "Telegram Bot-Token"
+      help: "Der HTTP-API-Token, den @BotFather nach `/newbot` ausgibt (Format `123456:ABC-…`). Wird verschlüsselt im Plugin-Vault gespeichert (Vault-Key `telegram_bot_token`), nie in der installed.json-Config. Ohne Token kann der Channel nicht aktiviert werden."
+      required: true
     - key: "telegram_public_base_url"
       type: "string"
       label: "Public HTTPS Base-URL für den Webhook"
@@ -107,16 +112,25 @@ setup:
 
 playbook:
   when_to_use: |
-    Der Telegram-Channel wird aktiviert sobald TELEGRAM_BOT_TOKEN und
-    TELEGRAM_WEBHOOK_SECRET in der env vorliegen (oder via Plugin-Vault
-    konfiguriert sind). Endanwender chatten mit dem Bot 1:1 (private)
-    oder in Gruppen/Supergroups; Channel-Posts werden ignoriert. Der
-    Channel ownt /api/telegram/webhook (in HTTPS-Webhook-Modus) oder
-    pollt aktiv via getUpdates (LP-Modus). Gruppen-Roster via
-    getChatAdministrators (Bot-API-Limitierung — non-admin Members
-    bleiben für den Orchestrator unsichtbar).
+    Der Telegram-Channel aktiviert sich, sobald ein Bot-Token vorliegt —
+    bei Store-Installation über das `telegram_bot_token`-Setup-Feld (→ Vault),
+    alternativ über TELEGRAM_BOT_TOKEN in der env (eingebauter Bootstrap-Pfad).
+    Webhook-Secret und Admin-Token werden bei der ersten Aktivierung
+    automatisch generiert und im Vault persistiert, falls nicht vorhanden.
+    Zusätzlich müssen die Kernel-Capabilities chatAgent@^1, turnContext und
+    memoryStore verfügbar sein. Endanwender chatten mit dem Bot 1:1 (private)
+    oder in Gruppen/Supergroups; Channel-Posts werden ignoriert. Der Channel
+    ownt /api/telegram/webhook (in HTTPS-Webhook-Modus) oder pollt aktiv via
+    getUpdates (LP-Modus). Gruppen-Roster via getChatAdministrators
+    (Bot-API-Limitierung — non-admin Members bleiben für den Orchestrator
+    unsichtbar).
 
 permissions:
+  # Auto-generate + persist telegram_webhook_secret AND telegram_admin_token on
+  # first activation (see plugin.ts). Gates ctx.secrets.set, scoped to this
+  # plugin's own vault namespace.
+  secrets:
+    runtime_write: true
   memory:
     reads: []
     writes: []

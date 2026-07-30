@@ -1,6 +1,6 @@
 {
   "name": "@omadia/channel-telegram",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -15,7 +15,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc && node scripts/copy-ui-assets.mjs",
+    "build": "tsc && node scripts/copy-ui-assets.mjs && node scripts/build-zip.mjs ",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
@@ -26,11 +26,12 @@
     "express": "^5.0.0"
   },
   "devDependencies": {
-    "typescript": "^6.0.2",
-    "@types/node": "^25.6.0",
+    "@omadia/channel-sdk": "file:../omadia/middleware/packages/harness-channel-sdk",
     "@types/express": "^5.0.6",
+    "@types/node": "^25.6.0",
+    "esbuild": "^0.28.1",
     "express": "^5.0.0",
-    "@omadia/channel-sdk": "file:../odoo-bot/middleware/packages/harness-channel-sdk"
+    "typescript": "^6.0.2"
   },
   "engines": {
     "node": ">=20"
@@ -41,5 +42,8 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/byte5ai/omadia-channel-telegram.git"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
   }
 }
