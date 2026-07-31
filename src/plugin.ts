@@ -18,6 +18,7 @@
  * specific Deps shapes.
  */
 
+import { randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -89,9 +90,28 @@ export async function activate(
   const conversationHistoryStore = new InMemoryConversationHistoryStore();
 
   const botToken = await ctx.secrets.require('telegram_bot_token');
-  const webhookSecret = await ctx.secrets.require(
-    'telegram_webhook_secret',
-  );
+  // Webhook secret guards the webhook endpoint — Telegram echoes it in the
+  // X-Telegram-Bot-Api-Secret-Token header so the router can reject spoofed
+  // calls. Unlike the bot token it is NOT issued externally (BotFather has
+  // nothing to do with it); it's a purely internal shared secret. The env
+  // bootstrap path seeds it from TELEGRAM_WEBHOOK_SECRET, but store-form
+  // installs supply no value — so auto-generate and persist one on first
+  // activation, mirroring the admin-token pattern in bootstrap. Needs
+  // permissions.secrets.runtime_write in the manifest (gates ctx.secrets.set).
+  let webhookSecret = await ctx.secrets.get('telegram_webhook_secret');
+  if (!webhookSecret) {
+    if (!ctx.secrets.set) {
+      throw new Error(
+        'telegram_webhook_secret is absent and ctx.secrets.set is unavailable — declare permissions.secrets.runtime_write in manifest.yaml so the channel can auto-generate one on first activation.',
+      );
+    }
+    webhookSecret = randomBytes(32).toString('hex');
+    await ctx.secrets.set('telegram_webhook_secret', webhookSecret);
+    core.log(
+      'info',
+      'telegram_webhook_secret auto-generated and persisted to vault (first activation)',
+    );
+  }
   const publicBaseUrl = ctx.config.get<string>('telegram_public_base_url');
   // dmPolicy is the default-pairing safety knob (S+7.6).
   //
@@ -220,7 +240,27 @@ export async function activate(
   // the admin router is NOT mounted and operator gets a clear log hint.
   const webhookMode: 'webhook' | 'long-poll' =
     lpHandle ? 'long-poll' : 'webhook';
-  const adminToken = await ctx.secrets.get('telegram_admin_token');
+  // Admin token gates the operator-admin surface (the Bearer the admin UI's
+  // login form sends). There is no setup-form field and no env var for it:
+  // it's auto-generated on first activation, persisted to the vault, and
+  // LOGGED IN CLEARTEXT once so the operator can copy it from the middleware
+  // boot log and paste it into the admin UI login. Subsequent activations
+  // reuse the stored value and don't re-log it. To rotate: delete the
+  // telegram_admin_token vault key and reactivate.
+  //
+  // NOTE: this deliberately logs a secret in cleartext (explicit operator
+  // choice for this deployment). Log sinks that fan out — aggregators, CI,
+  // screenshots — will capture it. Requires permissions.secrets.runtime_write
+  // (gates ctx.secrets.set).
+  let adminToken = await ctx.secrets.get('telegram_admin_token');
+  if (!adminToken && ctx.secrets.set) {
+    adminToken = randomBytes(32).toString('hex');
+    await ctx.secrets.set('telegram_admin_token', adminToken);
+    core.log(
+      'info',
+      `telegram_admin_token generated on first activation: ${adminToken} — paste this into the admin UI login (${WEBHOOK_PATH_PREFIX}/admin/ui/). Rotate by deleting the telegram_admin_token vault key and reactivating.`,
+    );
+  }
   if (adminToken && me.username) {
     // Mount UI router FIRST (more specific prefix). Express's route
     // registry is first-match-wins per prefix; if the broader admin
@@ -278,12 +318,12 @@ export async function activate(
     );
     core.log(
       'info',
-      `telegram admin token: read once via vault (key=telegram_admin_token under plugin @omadia/channel-telegram); paste into the UI login at ${WEBHOOK_PATH_PREFIX}/admin/ui/`,
+      `telegram admin UI login at ${WEBHOOK_PATH_PREFIX}/admin/ui/ — the admin token was logged in cleartext on its first-activation generation (grep "telegram_admin_token generated"). If lost, rotate: delete the telegram_admin_token vault key and reactivate.`,
     );
   } else if (!adminToken) {
     core.log(
       'warn',
-      'telegram_admin_token missing in vault — admin router NOT mounted. Set the secret via vault or re-run bootstrap to auto-generate.',
+      'telegram_admin_token could not be generated — ctx.secrets.set is unavailable. Declare permissions.secrets.runtime_write in the manifest so the channel can auto-generate and persist one on first activation. Admin router NOT mounted.',
     );
   } else {
     core.log(

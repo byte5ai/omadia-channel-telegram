@@ -46,8 +46,8 @@ npm run build        # tsc && copy UI assets into dist/
 
 The `@omadia/*` peers (`plugin-api`, `channel-sdk`, `orchestrator`) are
 provided by the omadia host at runtime. For local typechecking,
-`tsconfig.json` maps them to a sibling `odoo-bot` checkout — see `paths` in
-`tsconfig.json`.
+`tsconfig.json` maps them to a sibling `omadia` checkout (built `dist/`) — see
+`paths` in `tsconfig.json`.
 
 ## Manifest
 
