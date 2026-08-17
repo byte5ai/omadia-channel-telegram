@@ -21,7 +21,12 @@
  * - Trace panel rendering (skip the runTrace summary)
  */
 
-import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
+import {
+  formatSessionScope,
+  isNoReply,
+  logNoReplyDrop,
+  unsharedConversationScope,
+} from '@omadia/channel-sdk';
 import { evaluateDmPolicy, type DmPolicy } from './dmPolicyGuard.js';
 import type {
   ChatAgent,
@@ -990,7 +995,25 @@ export class TelegramBot {
       bytesBase64?: string;
     }>;
   }): Promise<void> {
-    const sessionScope = `telegram:${String(input.chat.id)}`;
+    // #575 D7 — routed through the channel SDK's typed scope resolver, the same
+    // way the Teams channel now is.
+    //
+    // Unlike Teams this is not a bug fix, and it should not be read as one.
+    // `TelegramChat.id` is a required `number`, so the scope can never be absent
+    // and never lands in a shared bucket — the resolver is a pass-through today.
+    // The value is that it stays correct tomorrow: a token added to
+    // `SHARED_SCOPE_TOKENS` later is handled without this file learning about
+    // it, and the scope is a typed `ScopeId` at ingress rather than a string
+    // nobody classifies.
+    //
+    // `formatSessionScope` re-emits `telegram:<id>` byte-identically — the SDK's
+    // adapter deliberately keeps it an opaque conversation scope so that
+    // introducing the type moves no scope string, and therefore orphans no
+    // existing knowledge-graph partition. No `uniqueSuffix` is passed because
+    // the unresolvable branch is unreachable from this input.
+    const sessionScope = formatSessionScope(
+      unsharedConversationScope({ scope: `telegram:${String(input.chat.id)}` }),
+    );
     const userId = input.from
       ? `telegram:${String(input.from.id)}`
       : undefined;

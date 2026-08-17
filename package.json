@@ -1,6 +1,6 @@
 {
   "name": "@omadia/channel-telegram",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +26,7 @@
     "express": "^5.0.0"
   },
   "devDependencies": {
-    "@omadia/channel-sdk": "file:../omadia/middleware/packages/harness-channel-sdk",
+    "@omadia/channel-sdk": "file:../odoo-bot/middleware/packages/harness-channel-sdk",
     "@types/express": "^5.0.6",
     "@types/node": "^25.6.0",
     "esbuild": "^0.28.1",
@@ -45,5 +45,8 @@
   },
   "dependencies": {
     "zod": "^4.4.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
   }
 }
