@@ -1,6 +1,6 @@
 {
   "name": "@omadia/channel-telegram",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -17,7 +17,7 @@
   "scripts": {
     "build": "tsc && node scripts/copy-ui-assets.mjs && node scripts/build-zip.mjs ",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist out *.tsbuildinfo"
   },
   "peerDependencies": {
     "@omadia/channel-sdk": "*",
