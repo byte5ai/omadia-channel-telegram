@@ -26,7 +26,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { build } from 'esbuild';
@@ -99,13 +99,23 @@ mkdirSync(stageDir, { recursive: true });
 
 // Everything the host needs at runtime. `skills/` ships prompt-partials that
 // agents load at activation — it MUST be in the ZIP. node_modules must NOT.
-const INCLUDE = ['manifest.yaml', 'package.json', 'dist', 'assets', 'skills', 'README.md', 'LICENSE', 'NOTICE'];
+const INCLUDE = ['manifest.yaml', 'dist', 'assets', 'skills', 'README.md', 'LICENSE', 'NOTICE'];
 
 for (const entry of INCLUDE) {
   const src = join(pkgRoot, entry);
   if (!existsSync(src)) continue;
   cpSync(src, join(stageDir, entry), { recursive: true });
 }
+
+// package.json is staged, not copied: devDependencies are removed first.
+// Nothing installs them from a plugin ZIP, and this package's
+// `@omadia/channel-sdk` entry is a `file:../odoo-bot/middleware/...` path — the
+// published 0.2.0 artifact carries it today, which puts one machine's
+// directory layout into a publicly downloadable file and would break any host
+// that ran an install against it.
+const stagedPkg = { ...pkg };
+delete stagedPkg.devDependencies;
+writeFileSync(join(stageDir, 'package.json'), `${JSON.stringify(stagedPkg, null, 2)}\n`);
 
 // --- 4) zip ----------------------------------------------------------------
 const zipPath = join(pkgRoot, 'out', `${safeName}-${pkg.version}.zip`);

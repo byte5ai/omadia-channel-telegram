@@ -1,0 +1,101 @@
+# SkillSpector baseline — findings listed here are suppressed on future scans.
+# Edit 'reason' fields and add glob 'rules' as needed. See docs/SUPPRESSION.md.
+version: 1
+rules: []
+fingerprints:
+- hash: sha256:1893d59d70d1cc31
+  rule_id: E1
+  file: src/telegramBot.ts
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:a3df792fd127008d
+  rule_id: E1
+  file: src/telegramBot.ts
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:a3f9703b3018ac4d
+  rule_id: E1
+  file: src/telegramBot.ts
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:005fae9fc53a3b0b
+  rule_id: EA3
+  file: LICENSE
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:ff0b5e7d65868db1
+  rule_id: SC1
+  file: package.json
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:8762bb67263c7632
+  rule_id: SC1
+  file: package.json
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:33a71f689f47f424
+  rule_id: SC1
+  file: package.json
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:3d8cd09fe8a4571d
+  rule_id: SC1
+  file: package.json
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:a3d270f67334f643
+  rule_id: SC1
+  file: package.json
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:dedb55a07a794a40
+  rule_id: SC1
+  file: package.json
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:81ecf3003312160b
+  rule_id: SC1
+  file: package.json
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:9859648d777a209c
+  rule_id: SC1
+  file: package.json
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:7f68e0aa873fdb41
+  rule_id: TM1
+  file: src/adminRouter.ts
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:2201092424517722
+  rule_id: TM1
+  file: src/adminRouter.ts
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:3ca1909ef38510e1
+  rule_id: TM1
+  file: src/adminRouter.ts
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
+- hash: sha256:3cfe6ffa52169ae0
+  rule_id: TM1
+  file: src/adminRouter.ts
+  reason: 'omadia FP-calibration 2026-07-06: accepted static findings (config reads,
+    scaffold identifiers like disposeToolkit, HTML comments, route docstrings). New
+    findings still surface.'
