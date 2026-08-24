@@ -1,6 +1,6 @@
 {
   "name": "@omadia/channel-telegram",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -36,7 +36,7 @@
   "engines": {
     "node": ">=20"
   },
-  "description": "Telegram channel plugin for Omadia. Implements @omadia/channel-sdk's ChannelPlugin contract: Bot-API webhook + optional long-polling fallback, MarkdownV2 rendering, inline-keyboard interactives, chat-member roster, and HTTP route for the Telegram webhook endpoint. Self-contained — no depends_on relationship to other integrations.",
+  "description": "Telegram channel plugin for Omadia. Implements @omadia/channel-sdk's ChannelPlugin contract: Bot-API webhook + optional long-polling fallback, MarkdownV2 rendering, inline-keyboard interactives, chat-member roster, and HTTP route for the Telegram webhook endpoint. Self-contained \u2014 no depends_on relationship to other integrations.",
   "license": "MIT",
   "homepage": "https://github.com/byte5ai/omadia-channel-telegram",
   "repository": {
