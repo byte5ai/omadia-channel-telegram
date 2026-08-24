@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-telegram"
   name: "Telegram Channel"
-  version: "0.2.1"
+  version: "0.2.2"
   kind: "channel"
   domain: "channel.telegram"
   description: "Telegram als zweiter First-Class-Channel von Omadia. Spricht die Telegram Bot API direkt (kein Drittanbieter-SDK), supports Webhook + Long-Polling-Fallback, MarkdownV2-Rendering, Inline-Keyboards für Choice-Cards / Slot-Picker / Follow-Ups, Roster via getChatAdministrators für Gruppen. Self-contained — keine `depends_on`-Beziehung. Validiert die @omadia/channel-sdk Contracts gegen ein Runtime ohne Bot-Framework."
@@ -159,10 +159,38 @@ integrations:
 #     and feeds `bundle.agent` into the TelegramBot. Without it the channel
 #     has nothing to delegate user turns to, so we hard-block (S+10-4b).
 #
-# memoryStore@^1 stays structurally injected via DI (`deps.memoryStore`)
-# because the kernel pre-resolves it once and shares the same instance with
-# the pairing-store helpers. Promotion to `requires:` is deferred — the DI
-# path already gives us the boot-order guarantees we need.
+# omadia#838 — declare every capability this channel resolves through
+# `ctx.services.get`, retiring the `@omadia/channel-telegram` row in
+# `STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20`.
+#
+# `requires:` (genuinely cannot activate without it, AND a plugin manifest
+# declares the matching `provides:` so the capability resolver can resolve it):
+#   - `chatAgent@^1`   — orchestrator-published ChatAgentBundle; activate()
+#                        throws when absent.
+#   - `memoryStore@^1` — the pairing store is backed by it; activate() throws
+#                        when absent. Published by `@omadia/memory` /
+#                        `@omadia/memory-postgres` (both declare
+#                        `provides: memoryStore@1`), so a `requires:` edge
+#                        resolves and orders the provider first. This replaces
+#                        the earlier "structurally injected via DI, promotion
+#                        deferred" note — the DI instance and this declaration
+#                        name the same registry entry.
+#
+# `optional_requires:` (grants the same declaration the service gate asks for
+# without a resolver edge — used where NO plugin manifest provides the name, so
+# a `requires:` entry would be permanently unresolved and drop the channel from
+# the eligible set):
+#   - `turnContext@1`     — published by the middleware kernel
+#                           (`middleware/src/index.ts`), not by a plugin.
+#                           activate() throws when absent, but a `requires:`
+#                           entry could never resolve.
+#   - `channelResolver@1` — per-turn Agent routing; also kernel-side, and
+#                           absence is survivable (falls back to the default
+#                           chatAgent).
 requires:
   - "chatAgent@^1"
+  - "memoryStore@^1"
+optional_requires:
+  - "channelResolver@1"
+  - "turnContext@1"
 provides: []
