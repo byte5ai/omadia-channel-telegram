@@ -22,6 +22,8 @@ import type {
   OutgoingAttachment,
   OutgoingChoiceCard,
   OutgoingSlotPicker,
+  Principal,
+  ScopeId,
   SemanticAnswer,
 } from '@omadia/channel-sdk';
 
@@ -100,10 +102,49 @@ export interface ConversationHistoryStore {
 // Chat agent — mirror of ChatAgent + ChatTurnInput
 // ---------------------------------------------------------------------------
 
+/**
+ * W5 memory-ACL — structural mirror of the SDK's `TurnOrigin` (design #870 §2).
+ *
+ * A shim rather than a re-export for the same reason everything else in this
+ * file is one: the plugin is versioned independently of the kernel and installs
+ * against whatever `@omadia/channel-sdk` a deployment already ships. A named
+ * import of `TurnOrigin` would make this package fail to build against every
+ * SDK released before the type existed; a structural mirror keeps the object
+ * assignable the moment the kernel's `ChatTurnInput.origin` lands, and inert
+ * (an ignored extra property) on a kernel that has not learned about it yet.
+ *
+ * `ScopeId` and `Principal` are named imports because both predate this wave
+ * and are already part of the SDK surface this package builds against — the
+ * only field that needed mirroring is the envelope.
+ *
+ * Telegram never fills `container`: the Bot API has no notion of an enclosing
+ * workspace. A supergroup is a conversation, not a team, so the field stays
+ * absent and such a turn reaches its channel tier only — never a team tier
+ * shared with another chat. See `telegramTurnOrigin` in telegramBot.ts.
+ */
+export interface TurnOriginShim {
+  /** Plugin/channel type token. Always `'telegram'` from this package. */
+  readonly channelType: string;
+  /** Conversation scope of the turn — the existing #575 type. */
+  readonly scope: ScopeId;
+  /** Enclosing container when the platform supplies one. Telegram: never. */
+  readonly container?: { readonly kind: 'team' | 'tenant'; readonly id: string };
+  /** Speaking person — the existing #333 type. Audit only, not the axis key. */
+  readonly principal?: Principal;
+}
+
 export interface ChatTurnInput {
   userMessage: string;
   sessionScope?: string;
   userId?: string;
+  /**
+   * W5 memory-ACL — where this turn came from, for chat-context memory scoping.
+   *
+   * Optional by contract: a kernel that predates the memory ACL ignores it, and
+   * a turn that arrives without it resolves to the context-free axes, which are
+   * byte-identical to today's behaviour. No flag day in either direction.
+   */
+  origin?: TurnOriginShim;
   priorTurns?: Array<{ userMessage: string; assistantAnswer: string }>;
   extraSystemHint?: string;
   freshCheck?: boolean;

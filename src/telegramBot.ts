@@ -25,7 +25,9 @@ import {
   formatSessionScope,
   isNoReply,
   logNoReplyDrop,
+  makePrincipal,
   unsharedConversationScope,
+  type ScopeId,
 } from '@omadia/channel-sdk';
 import { evaluateDmPolicy, type DmPolicy } from './dmPolicyGuard.js';
 import type {
@@ -33,6 +35,7 @@ import type {
   ChatParticipantsProvider,
   ConversationHistoryStore,
   TurnContextModule,
+  TurnOriginShim,
 } from './kernel-types.js';
 import type { PairingStore } from './pairingStore.js';
 import type { PairingTokenRegistry } from './pairingTokens.js';
@@ -168,6 +171,80 @@ export interface TelegramCallbackQuery {
   from: TelegramUser;
   message?: TelegramMessage;
   data?: string;
+}
+
+// ---------------------------------------------------------------------------
+// W5 memory-ACL — turn origin (design #870 §4, Telegram recipe)
+// ---------------------------------------------------------------------------
+
+/** The channel type token this package stamps on every origin it builds. */
+export const TELEGRAM_CHANNEL_TYPE = 'telegram';
+
+/**
+ * Build the `TurnOrigin` for a Telegram turn from the Bot-API fields the
+ * adapter already reads.
+ *
+ * Pure and synchronous on purpose: the origin is what decides which memory
+ * tiers a turn may reach, so the decision has to be checkable as a table rather
+ * than only through a live bot. Nothing here enforces anything —
+ * `memoryAxesForOrigin` on the kernel side translates this into scope patterns
+ * and `ScopedMemoryStore` remains the backstop.
+ *
+ * Two rules, both taken from the §4 recipe:
+ *
+ *  1. **`chat.type` decides the tier.** A `private` chat is one human talking to
+ *     the bot, so it is a personal scope keyed on that human. Everything else —
+ *     `group`, `supergroup`, and a broadcast `channel` — is a conversation with
+ *     an audience, so it keeps the conversation scope the adapter already built
+ *     for `sessionScope`. Reusing that exact `ScopeId` rather than re-deriving
+ *     one is deliberate: two spellings of the same conversation would key two
+ *     different context trees.
+ *  2. **Telegram never yields a container.** The Bot API has no enclosing
+ *     workspace — a supergroup is a conversation, not a team. Leaving
+ *     `container` absent is therefore not a gap to fill later; it is the
+ *     accurate statement, and it is what keeps a Telegram turn off the team
+ *     tier entirely.
+ *
+ * The personal scope keys on the RAW numeric user id (`'12345'`), not on the
+ * `` `telegram:${id}` `` spelling that `ChatTurnInput.userId` carries. The
+ * kernel keys the tier as `memoryContextKey(channelType, nativeId)` — the
+ * channel type is already a segment of that key, so prefixing the id would
+ * spell the channel twice and put the same person under two different keys
+ * depending on which field a caller reached for. Negative ids (`-1001234567890`
+ * for a supergroup) are kept verbatim for the same reason: the key must stay
+ * injective, and the minus sign is part of the identity.
+ *
+ * A `private` chat with no `from` (Telegram allows the field to be absent on
+ * some service messages) falls back to the conversation scope instead of
+ * inventing a user: guessing a person's tier is the unsafe direction, and the
+ * conversation scope of a private chat is still that one chat and nobody else.
+ */
+export function telegramTurnOrigin(args: {
+  readonly chatType: TelegramChat['type'];
+  readonly conversationScope: ScopeId;
+  readonly fromId?: number;
+}): TurnOriginShim {
+  const isPrivate = args.chatType === 'private';
+  const scope: ScopeId =
+    isPrivate && args.fromId !== undefined
+      ? { kind: 'personal', userId: String(args.fromId) }
+      : args.conversationScope;
+
+  // Carried for audit and for the promote action's actor — never for the axis
+  // derivation, which reads the scope alone so the two cannot disagree. The
+  // principal keeps the `telegram:<id>` spelling that `ChatTurnInput.userId` and
+  // the pairing store already use, so an audit row can be matched back to a
+  // binding without a second translation table.
+  const principal =
+    args.fromId === undefined
+      ? undefined
+      : makePrincipal('user', `${TELEGRAM_CHANNEL_TYPE}:${String(args.fromId)}`);
+
+  return {
+    channelType: TELEGRAM_CHANNEL_TYPE,
+    scope,
+    ...(principal ? { principal } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1011,12 +1088,22 @@ export class TelegramBot {
     // introducing the type moves no scope string, and therefore orphans no
     // existing knowledge-graph partition. No `uniqueSuffix` is passed because
     // the unresolvable branch is unreachable from this input.
-    const sessionScope = formatSessionScope(
-      unsharedConversationScope({ scope: `telegram:${String(input.chat.id)}` }),
-    );
+    const conversationScope = unsharedConversationScope({
+      scope: `telegram:${String(input.chat.id)}`,
+    });
+    const sessionScope = formatSessionScope(conversationScope);
     const userId = input.from
       ? `telegram:${String(input.from.id)}`
       : undefined;
+
+    // W5 memory-ACL — state WHERE this turn came from so the kernel can scope
+    // chat-context memory to it. Built from the same `ScopeId` the session scope
+    // is rendered from, so the origin and the scope can never disagree.
+    const origin = telegramTurnOrigin({
+      chatType: input.chat.type,
+      conversationScope,
+      ...(input.from ? { fromId: input.from.id } : {}),
+    });
 
     // US7 — resolve the Agent bound to this chat/bot for the whole turn.
     this.resolveChatAgentForTurn(input.chat);
@@ -1041,6 +1128,7 @@ export class TelegramBot {
         const result = await chatAgent.chat({
           userMessage: input.userMessage,
           sessionScope,
+          origin,
           ...(userId ? { userId } : {}),
           ...(priorTurns.length > 0
             ? {

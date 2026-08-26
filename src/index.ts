@@ -11,8 +11,10 @@
 export { activate } from './plugin.js';
 
 export {
+  TELEGRAM_CHANNEL_TYPE,
   TelegramApiClient,
   TelegramBot,
+  telegramTurnOrigin,
   type TelegramBotOptions,
   type TelegramUpdate,
   type TelegramMessage,
