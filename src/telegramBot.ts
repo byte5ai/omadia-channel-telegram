@@ -38,6 +38,7 @@ import type {
   TurnOriginShim,
 } from './kernel-types.js';
 import type { PairingStore } from './pairingStore.js';
+import type { GroupMemberTracker } from './groupMemberTracker.js';
 import type { PairingTokenRegistry } from './pairingTokens.js';
 import { escapeHtml } from './markdownToHtml.js';
 import {
@@ -55,7 +56,20 @@ export interface TelegramUpdate {
   callback_query?: TelegramCallbackQuery;
   /** S+7.6 — bot's own chat-member status changed (added, removed, promoted, …) */
   my_chat_member?: ChatMemberUpdated;
+  /** Someone else's membership changed. Delivered only while the bot is an admin. */
+  chat_member?: ChatMemberUpdated;
 }
+
+/** The update kinds the bot subscribes to (`allowed_updates`). */
+export type TelegramUpdateKind = 'message' | 'callback_query' | 'my_chat_member' | 'chat_member';
+
+/** What `allowed_updates` asks Telegram for, polling and webhook alike. */
+export const TELEGRAM_ALLOWED_UPDATES: TelegramUpdateKind[] = [
+  'message',
+  'callback_query',
+  'my_chat_member',
+  'chat_member',
+];
 
 /**
  * Subset of Bot-API ChatMemberUpdated. We only read the bot's own status
@@ -81,6 +95,8 @@ export interface ChatMember {
     | 'restricted'
     | 'left'
     | 'kicked';
+  /** Set for `restricted`: whether the user is still in the chat. */
+  is_member?: boolean;
 }
 
 export interface TelegramPhotoSize {
@@ -122,6 +138,10 @@ export interface TelegramMessage {
    */
   entities?: TelegramMessageEntity[];
   reply_to_message?: TelegramMessage;
+  /** Service message: these users joined (or were added to) the group. */
+  new_chat_members?: TelegramUser[];
+  /** Service message: this user left (or was removed from) the group. */
+  left_chat_member?: TelegramUser;
 }
 
 export interface TelegramMessageEntity {
@@ -304,7 +324,7 @@ export class TelegramApiClient {
   async setWebhook(params: {
     url: string;
     secret_token?: string;
-    allowed_updates?: Array<'message' | 'callback_query' | 'my_chat_member'>;
+    allowed_updates?: Array<TelegramUpdateKind>;
     drop_pending_updates?: boolean;
   }): Promise<true> {
     return await this.call<true>('setWebhook', params);
@@ -336,10 +356,21 @@ export class TelegramApiClient {
     return await this.call('getChatAdministrators', params);
   }
 
+  async getChatMemberCount(params: { chat_id: number }): Promise<number> {
+    return await this.call<number>('getChatMemberCount', params);
+  }
+
+  async getChatMember(params: {
+    chat_id: number;
+    user_id: number;
+  }): Promise<{ user: TelegramUser; status: string; is_member?: boolean }> {
+    return await this.call('getChatMember', params);
+  }
+
   async getUpdates(params: {
     offset?: number;
     timeout?: number;
-    allowed_updates?: Array<'message' | 'callback_query' | 'my_chat_member'>;
+    allowed_updates?: Array<TelegramUpdateKind>;
   }): Promise<TelegramUpdate[]> {
     return await this.call('getUpdates', params);
   }
@@ -407,7 +438,11 @@ export interface TelegramBotOptions {
   history: ConversationHistoryStore;
   turnContext: TurnContextModule;
   /** Optional roster lookup; only invoked for group/supergroup chats. */
-  rosterProvider?: (chatId: number) => ChatParticipantsProvider;
+  rosterProvider?: (chatId: number) => Promise<ChatParticipantsProvider>;
+  /** Records who is in a group; feeds the roster's member set. */
+  memberTracker?: GroupMemberTracker;
+  /** Drops a chat's cached roster after a membership change. */
+  invalidateRoster?: (chatId: number) => void;
   /** Per-chat lock to serialise concurrent callback_query + message turns. */
   pendingCallbackTtlMs?: number;
   /** Pairing infrastructure (S+7.6). Both required for /start <token> to work. */
@@ -453,8 +488,10 @@ export class TelegramBot {
   private readonly history: ConversationHistoryStore;
   private readonly turnContext: TurnContextModule;
   private readonly rosterProviderFactory:
-    | ((chatId: number) => ChatParticipantsProvider)
+    | ((chatId: number) => Promise<ChatParticipantsProvider>)
     | undefined;
+  private readonly memberTracker: GroupMemberTracker | undefined;
+  private readonly invalidateRoster: ((chatId: number) => void) | undefined;
   private readonly renderer: TelegramRenderer;
   private readonly pairingStore: PairingStore;
   private readonly pairingTokens: PairingTokenRegistry;
@@ -476,6 +513,8 @@ export class TelegramBot {
     this.history = opts.history;
     this.turnContext = opts.turnContext;
     this.rosterProviderFactory = opts.rosterProvider;
+    this.memberTracker = opts.memberTracker;
+    this.invalidateRoster = opts.invalidateRoster;
     this.renderer = new TelegramRenderer(
       this.api,
       opts.pendingCallbackTtlMs ?? DEFAULT_CALLBACK_TTL_MS,
@@ -547,6 +586,10 @@ export class TelegramBot {
     }
     if (update.my_chat_member) {
       await this.handleChatMemberUpdate(update.my_chat_member);
+      return;
+    }
+    if (update.chat_member) {
+      await this.trackMemberUpdate(update.chat_member);
       return;
     }
     // Other update kinds (edited_message, channel_post, …) are silently
@@ -636,7 +679,57 @@ export class TelegramBot {
     }
   }
 
+  /**
+   * Record who is in an activated group: the sender of any message, plus the
+   * join and leave notices. Returns true for a pure join/leave notice, which
+   * is not a message to answer.
+   *
+   * Unactivated groups are not tracked — the bot stays silent there and has
+   * no reason to keep a list of their members.
+   */
+  private async trackGroupMessage(message: TelegramMessage): Promise<boolean> {
+    const isNotice =
+      (message.new_chat_members?.length ?? 0) > 0 || message.left_chat_member !== undefined;
+    const isGroup = message.chat.type === 'group' || message.chat.type === 'supergroup';
+    if (!isGroup || !this.memberTracker) return isNotice;
+    if (!(await this.pairingStore.getGroupActivation(message.chat.id))) return isNotice;
+
+    const chatId = message.chat.id;
+    const joined = [...(message.from ? [message.from] : []), ...(message.new_chat_members ?? [])]
+      .filter((u) => u.id !== message.left_chat_member?.id);
+    const someoneNew = await this.memberTracker.observe(chatId, joined);
+    if (message.left_chat_member) {
+      await this.memberTracker.forget(chatId, [message.left_chat_member.id]);
+    }
+    // A cached roster that predates this change could be stale either way.
+    if (isNotice || someoneNew) this.invalidateRoster?.(chatId);
+    return isNotice;
+  }
+
+  /** Someone else's membership changed (`chat_member`; the bot must be admin). */
+  private async trackMemberUpdate(upd: ChatMemberUpdated): Promise<void> {
+    const isGroup = upd.chat.type === 'group' || upd.chat.type === 'supergroup';
+    if (!isGroup || !this.memberTracker) return;
+    if (!(await this.pairingStore.getGroupActivation(upd.chat.id))) return;
+    const member = upd.new_chat_member;
+    const present =
+      member.status === 'creator' ||
+      member.status === 'administrator' ||
+      member.status === 'member' ||
+      (member.status === 'restricted' && member.is_member === true);
+    if (present) {
+      await this.memberTracker.observe(upd.chat.id, [member.user]);
+    } else {
+      await this.memberTracker.forget(upd.chat.id, [member.user.id]);
+    }
+    this.invalidateRoster?.(upd.chat.id);
+  }
+
   private async handleMessage(message: TelegramMessage): Promise<void> {
+    // A join or leave notice is not a message to answer; it only updates who
+    // is in the group.
+    if (await this.trackGroupMessage(message)) return;
+
     // S+7.7+ — image-message support. Photos and image-MIME documents
     // become inbound attachments + an implicit caption-or-default text.
     // Pure-text messages still take the original text path.
@@ -1113,7 +1206,7 @@ export class TelegramBot {
       input.chat.type === 'group' || input.chat.type === 'supergroup';
     const rosterProvider =
       isGroup && this.rosterProviderFactory
-        ? this.rosterProviderFactory(input.chat.id)
+        ? await this.rosterProviderFactory(input.chat.id)
         : undefined;
 
     const stopTyping = this.startTypingLoop(input.chat.id);

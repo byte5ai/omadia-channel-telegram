@@ -45,9 +45,17 @@ export interface ChatParticipant {
   displayName: string;
   email: string | null;
   userPrincipalName: string | null;
+  /** `'agent'` marks a bot; the kernel leaves it out of the room's audience. */
+  kind?: 'human' | 'agent';
 }
 
-export type ChatParticipantsProvider = () => Promise<ChatParticipant[]>;
+/**
+ * `completeRoster` asserts the list is everyone in the chat. Only then does
+ * the kernel use it as the audience for member-scoped memory.
+ */
+export type ChatParticipantsProvider = (() => Promise<ChatParticipant[]>) & {
+  readonly completeRoster?: boolean;
+};
 
 // ---------------------------------------------------------------------------
 // Turn context — mirror of src/services/turnContext.ts (structural)

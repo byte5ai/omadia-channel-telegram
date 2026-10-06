@@ -34,7 +34,12 @@ export {
   type TelegramRouterDeps,
 } from './messagesRouter.js';
 
-export { TelegramRosterProvider } from './telegramRoster.js';
+export {
+  MAX_VERIFIED_MEMBERS,
+  TelegramRosterProvider,
+  type RosterSnapshot,
+} from './telegramRoster.js';
+export { GroupMemberTracker, type TrackedMember } from './groupMemberTracker.js';
 
 export {
   evaluateDmPolicy,
