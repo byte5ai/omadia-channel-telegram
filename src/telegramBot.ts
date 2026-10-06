@@ -25,7 +25,9 @@ import {
   formatSessionScope,
   isNoReply,
   logNoReplyDrop,
+  makePrincipal,
   unsharedConversationScope,
+  type ScopeId,
 } from '@omadia/channel-sdk';
 import { evaluateDmPolicy, type DmPolicy } from './dmPolicyGuard.js';
 import type {
@@ -33,8 +35,10 @@ import type {
   ChatParticipantsProvider,
   ConversationHistoryStore,
   TurnContextModule,
+  TurnOriginShim,
 } from './kernel-types.js';
 import type { PairingStore } from './pairingStore.js';
+import type { GroupMemberTracker } from './groupMemberTracker.js';
 import type { PairingTokenRegistry } from './pairingTokens.js';
 import { escapeHtml } from './markdownToHtml.js';
 import {
@@ -52,7 +56,20 @@ export interface TelegramUpdate {
   callback_query?: TelegramCallbackQuery;
   /** S+7.6 — bot's own chat-member status changed (added, removed, promoted, …) */
   my_chat_member?: ChatMemberUpdated;
+  /** Someone else's membership changed. Delivered only while the bot is an admin. */
+  chat_member?: ChatMemberUpdated;
 }
+
+/** The update kinds the bot subscribes to (`allowed_updates`). */
+export type TelegramUpdateKind = 'message' | 'callback_query' | 'my_chat_member' | 'chat_member';
+
+/** What `allowed_updates` asks Telegram for, polling and webhook alike. */
+export const TELEGRAM_ALLOWED_UPDATES: TelegramUpdateKind[] = [
+  'message',
+  'callback_query',
+  'my_chat_member',
+  'chat_member',
+];
 
 /**
  * Subset of Bot-API ChatMemberUpdated. We only read the bot's own status
@@ -78,6 +95,8 @@ export interface ChatMember {
     | 'restricted'
     | 'left'
     | 'kicked';
+  /** Set for `restricted`: whether the user is still in the chat. */
+  is_member?: boolean;
 }
 
 export interface TelegramPhotoSize {
@@ -119,6 +138,10 @@ export interface TelegramMessage {
    */
   entities?: TelegramMessageEntity[];
   reply_to_message?: TelegramMessage;
+  /** Service message: these users joined (or were added to) the group. */
+  new_chat_members?: TelegramUser[];
+  /** Service message: this user left (or was removed from) the group. */
+  left_chat_member?: TelegramUser;
 }
 
 export interface TelegramMessageEntity {
@@ -168,6 +191,80 @@ export interface TelegramCallbackQuery {
   from: TelegramUser;
   message?: TelegramMessage;
   data?: string;
+}
+
+// ---------------------------------------------------------------------------
+// W5 memory-ACL — turn origin (design #870 §4, Telegram recipe)
+// ---------------------------------------------------------------------------
+
+/** The channel type token this package stamps on every origin it builds. */
+export const TELEGRAM_CHANNEL_TYPE = 'telegram';
+
+/**
+ * Build the `TurnOrigin` for a Telegram turn from the Bot-API fields the
+ * adapter already reads.
+ *
+ * Pure and synchronous on purpose: the origin is what decides which memory
+ * tiers a turn may reach, so the decision has to be checkable as a table rather
+ * than only through a live bot. Nothing here enforces anything —
+ * `memoryAxesForOrigin` on the kernel side translates this into scope patterns
+ * and `ScopedMemoryStore` remains the backstop.
+ *
+ * Two rules, both taken from the §4 recipe:
+ *
+ *  1. **`chat.type` decides the tier.** A `private` chat is one human talking to
+ *     the bot, so it is a personal scope keyed on that human. Everything else —
+ *     `group`, `supergroup`, and a broadcast `channel` — is a conversation with
+ *     an audience, so it keeps the conversation scope the adapter already built
+ *     for `sessionScope`. Reusing that exact `ScopeId` rather than re-deriving
+ *     one is deliberate: two spellings of the same conversation would key two
+ *     different context trees.
+ *  2. **Telegram never yields a container.** The Bot API has no enclosing
+ *     workspace — a supergroup is a conversation, not a team. Leaving
+ *     `container` absent is therefore not a gap to fill later; it is the
+ *     accurate statement, and it is what keeps a Telegram turn off the team
+ *     tier entirely.
+ *
+ * The personal scope keys on the RAW numeric user id (`'12345'`), not on the
+ * `` `telegram:${id}` `` spelling that `ChatTurnInput.userId` carries. The
+ * kernel keys the tier as `memoryContextKey(channelType, nativeId)` — the
+ * channel type is already a segment of that key, so prefixing the id would
+ * spell the channel twice and put the same person under two different keys
+ * depending on which field a caller reached for. Negative ids (`-1001234567890`
+ * for a supergroup) are kept verbatim for the same reason: the key must stay
+ * injective, and the minus sign is part of the identity.
+ *
+ * A `private` chat with no `from` (Telegram allows the field to be absent on
+ * some service messages) falls back to the conversation scope instead of
+ * inventing a user: guessing a person's tier is the unsafe direction, and the
+ * conversation scope of a private chat is still that one chat and nobody else.
+ */
+export function telegramTurnOrigin(args: {
+  readonly chatType: TelegramChat['type'];
+  readonly conversationScope: ScopeId;
+  readonly fromId?: number;
+}): TurnOriginShim {
+  const isPrivate = args.chatType === 'private';
+  const scope: ScopeId =
+    isPrivate && args.fromId !== undefined
+      ? { kind: 'personal', userId: String(args.fromId) }
+      : args.conversationScope;
+
+  // Carried for audit and for the promote action's actor — never for the axis
+  // derivation, which reads the scope alone so the two cannot disagree. The
+  // principal keeps the `telegram:<id>` spelling that `ChatTurnInput.userId` and
+  // the pairing store already use, so an audit row can be matched back to a
+  // binding without a second translation table.
+  const principal =
+    args.fromId === undefined
+      ? undefined
+      : makePrincipal('user', `${TELEGRAM_CHANNEL_TYPE}:${String(args.fromId)}`);
+
+  return {
+    channelType: TELEGRAM_CHANNEL_TYPE,
+    scope,
+    ...(principal ? { principal } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +324,7 @@ export class TelegramApiClient {
   async setWebhook(params: {
     url: string;
     secret_token?: string;
-    allowed_updates?: Array<'message' | 'callback_query' | 'my_chat_member'>;
+    allowed_updates?: Array<TelegramUpdateKind>;
     drop_pending_updates?: boolean;
   }): Promise<true> {
     return await this.call<true>('setWebhook', params);
@@ -259,10 +356,21 @@ export class TelegramApiClient {
     return await this.call('getChatAdministrators', params);
   }
 
+  async getChatMemberCount(params: { chat_id: number }): Promise<number> {
+    return await this.call<number>('getChatMemberCount', params);
+  }
+
+  async getChatMember(params: {
+    chat_id: number;
+    user_id: number;
+  }): Promise<{ user: TelegramUser; status: string; is_member?: boolean }> {
+    return await this.call('getChatMember', params);
+  }
+
   async getUpdates(params: {
     offset?: number;
     timeout?: number;
-    allowed_updates?: Array<'message' | 'callback_query' | 'my_chat_member'>;
+    allowed_updates?: Array<TelegramUpdateKind>;
   }): Promise<TelegramUpdate[]> {
     return await this.call('getUpdates', params);
   }
@@ -330,7 +438,11 @@ export interface TelegramBotOptions {
   history: ConversationHistoryStore;
   turnContext: TurnContextModule;
   /** Optional roster lookup; only invoked for group/supergroup chats. */
-  rosterProvider?: (chatId: number) => ChatParticipantsProvider;
+  rosterProvider?: (chatId: number) => Promise<ChatParticipantsProvider>;
+  /** Records who is in a group; feeds the roster's member set. */
+  memberTracker?: GroupMemberTracker;
+  /** Drops a chat's cached roster after a membership change. */
+  invalidateRoster?: (chatId: number) => void;
   /** Per-chat lock to serialise concurrent callback_query + message turns. */
   pendingCallbackTtlMs?: number;
   /** Pairing infrastructure (S+7.6). Both required for /start <token> to work. */
@@ -376,8 +488,10 @@ export class TelegramBot {
   private readonly history: ConversationHistoryStore;
   private readonly turnContext: TurnContextModule;
   private readonly rosterProviderFactory:
-    | ((chatId: number) => ChatParticipantsProvider)
+    | ((chatId: number) => Promise<ChatParticipantsProvider>)
     | undefined;
+  private readonly memberTracker: GroupMemberTracker | undefined;
+  private readonly invalidateRoster: ((chatId: number) => void) | undefined;
   private readonly renderer: TelegramRenderer;
   private readonly pairingStore: PairingStore;
   private readonly pairingTokens: PairingTokenRegistry;
@@ -399,6 +513,8 @@ export class TelegramBot {
     this.history = opts.history;
     this.turnContext = opts.turnContext;
     this.rosterProviderFactory = opts.rosterProvider;
+    this.memberTracker = opts.memberTracker;
+    this.invalidateRoster = opts.invalidateRoster;
     this.renderer = new TelegramRenderer(
       this.api,
       opts.pendingCallbackTtlMs ?? DEFAULT_CALLBACK_TTL_MS,
@@ -470,6 +586,10 @@ export class TelegramBot {
     }
     if (update.my_chat_member) {
       await this.handleChatMemberUpdate(update.my_chat_member);
+      return;
+    }
+    if (update.chat_member) {
+      await this.trackMemberUpdate(update.chat_member);
       return;
     }
     // Other update kinds (edited_message, channel_post, …) are silently
@@ -559,7 +679,57 @@ export class TelegramBot {
     }
   }
 
+  /**
+   * Record who is in an activated group: the sender of any message, plus the
+   * join and leave notices. Returns true for a pure join/leave notice, which
+   * is not a message to answer.
+   *
+   * Unactivated groups are not tracked — the bot stays silent there and has
+   * no reason to keep a list of their members.
+   */
+  private async trackGroupMessage(message: TelegramMessage): Promise<boolean> {
+    const isNotice =
+      (message.new_chat_members?.length ?? 0) > 0 || message.left_chat_member !== undefined;
+    const isGroup = message.chat.type === 'group' || message.chat.type === 'supergroup';
+    if (!isGroup || !this.memberTracker) return isNotice;
+    if (!(await this.pairingStore.getGroupActivation(message.chat.id))) return isNotice;
+
+    const chatId = message.chat.id;
+    const joined = [...(message.from ? [message.from] : []), ...(message.new_chat_members ?? [])]
+      .filter((u) => u.id !== message.left_chat_member?.id);
+    const someoneNew = await this.memberTracker.observe(chatId, joined);
+    if (message.left_chat_member) {
+      await this.memberTracker.forget(chatId, [message.left_chat_member.id]);
+    }
+    // A cached roster that predates this change could be stale either way.
+    if (isNotice || someoneNew) this.invalidateRoster?.(chatId);
+    return isNotice;
+  }
+
+  /** Someone else's membership changed (`chat_member`; the bot must be admin). */
+  private async trackMemberUpdate(upd: ChatMemberUpdated): Promise<void> {
+    const isGroup = upd.chat.type === 'group' || upd.chat.type === 'supergroup';
+    if (!isGroup || !this.memberTracker) return;
+    if (!(await this.pairingStore.getGroupActivation(upd.chat.id))) return;
+    const member = upd.new_chat_member;
+    const present =
+      member.status === 'creator' ||
+      member.status === 'administrator' ||
+      member.status === 'member' ||
+      (member.status === 'restricted' && member.is_member === true);
+    if (present) {
+      await this.memberTracker.observe(upd.chat.id, [member.user]);
+    } else {
+      await this.memberTracker.forget(upd.chat.id, [member.user.id]);
+    }
+    this.invalidateRoster?.(upd.chat.id);
+  }
+
   private async handleMessage(message: TelegramMessage): Promise<void> {
+    // A join or leave notice is not a message to answer; it only updates who
+    // is in the group.
+    if (await this.trackGroupMessage(message)) return;
+
     // S+7.7+ — image-message support. Photos and image-MIME documents
     // become inbound attachments + an implicit caption-or-default text.
     // Pure-text messages still take the original text path.
@@ -1011,12 +1181,22 @@ export class TelegramBot {
     // introducing the type moves no scope string, and therefore orphans no
     // existing knowledge-graph partition. No `uniqueSuffix` is passed because
     // the unresolvable branch is unreachable from this input.
-    const sessionScope = formatSessionScope(
-      unsharedConversationScope({ scope: `telegram:${String(input.chat.id)}` }),
-    );
+    const conversationScope = unsharedConversationScope({
+      scope: `telegram:${String(input.chat.id)}`,
+    });
+    const sessionScope = formatSessionScope(conversationScope);
     const userId = input.from
       ? `telegram:${String(input.from.id)}`
       : undefined;
+
+    // W5 memory-ACL — state WHERE this turn came from so the kernel can scope
+    // chat-context memory to it. Built from the same `ScopeId` the session scope
+    // is rendered from, so the origin and the scope can never disagree.
+    const origin = telegramTurnOrigin({
+      chatType: input.chat.type,
+      conversationScope,
+      ...(input.from ? { fromId: input.from.id } : {}),
+    });
 
     // US7 — resolve the Agent bound to this chat/bot for the whole turn.
     this.resolveChatAgentForTurn(input.chat);
@@ -1026,7 +1206,7 @@ export class TelegramBot {
       input.chat.type === 'group' || input.chat.type === 'supergroup';
     const rosterProvider =
       isGroup && this.rosterProviderFactory
-        ? this.rosterProviderFactory(input.chat.id)
+        ? await this.rosterProviderFactory(input.chat.id)
         : undefined;
 
     const stopTyping = this.startTypingLoop(input.chat.id);
@@ -1041,6 +1221,7 @@ export class TelegramBot {
         const result = await chatAgent.chat({
           userMessage: input.userMessage,
           sessionScope,
+          origin,
           ...(userId ? { userId } : {}),
           ...(priorTurns.length > 0
             ? {

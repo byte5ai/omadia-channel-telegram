@@ -40,7 +40,9 @@ import { createTelegramWebhookRouter } from './messagesRouter.js';
 import { PairingStore } from './pairingStore.js';
 import { PairingTokenRegistry } from './pairingTokens.js';
 import { TelegramRosterProvider } from './telegramRoster.js';
+import { GroupMemberTracker } from './groupMemberTracker.js';
 import {
+  TELEGRAM_ALLOWED_UPDATES,
   TelegramApiClient,
   TelegramBot,
   type TelegramUpdate,
@@ -134,8 +136,11 @@ export async function activate(
     `Telegram bot identity: @${me.username ?? '<unknown>'} (id=${String(me.id)})`,
   );
 
-  const rosterProvider = new TelegramRosterProvider(api);
-  core.log('info', 'telegram roster provider ready (ttl=5min)');
+  // Group members the bot has seen, persisted next to the pairings; the
+  // roster verifies them before the kernel may treat them as the room.
+  const memberTracker = new GroupMemberTracker(memoryStore);
+  const rosterProvider = new TelegramRosterProvider(api, memberTracker, me.id);
+  core.log('info', 'telegram roster provider ready (verified, ttl=10s)');
 
   // Pairing infrastructure (S+7.6) — token registry is in-memory ephemeral
   // (120s TTL, single-use), pairing store is backed by the memoryStore
@@ -171,6 +176,8 @@ export async function activate(
     history: conversationHistoryStore,
     turnContext,
     rosterProvider: (chatId) => rosterProvider.forChat(chatId),
+    memberTracker,
+    invalidateRoster: (chatId) => rosterProvider.invalidate(chatId),
     pairingStore,
     pairingTokens,
     dmPolicy,
@@ -199,7 +206,7 @@ export async function activate(
       await api.setWebhook({
         url: webhookUrl,
         secret_token: webhookSecret,
-        allowed_updates: ['message', 'callback_query', 'my_chat_member'],
+        allowed_updates: TELEGRAM_ALLOWED_UPDATES,
         drop_pending_updates: false,
       });
       core.log(
@@ -373,7 +380,7 @@ function startLongPolling(
         const updates: TelegramUpdate[] = await api.getUpdates({
           ...(offset !== undefined ? { offset } : {}),
           timeout: LONG_POLL_TIMEOUT_S,
-          allowed_updates: ['message', 'callback_query', 'my_chat_member'],
+          allowed_updates: TELEGRAM_ALLOWED_UPDATES,
         });
         for (const update of updates) {
           offset = update.update_id + 1;
