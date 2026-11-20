@@ -56,8 +56,8 @@ describe('routines scope per turn', () => {
     createTelegramRoutineTurn(routines as never, CHANNEL_ID, MIRA_KEY)({ userId: 'telegram:42', chatId: 42 });
     createTelegramRoutineTurn(routines as never, CHANNEL_ID, undefined)({ userId: 'telegram:42', chatId: -100777 });
     assert.deepEqual(seen, [
-      { userId: 'telegram:42', channel: 'telegram', conversationRef: { kind: 'channel', channelId: CHANNEL_ID, conversationId: '42', asChannelKey: MIRA_KEY } },
-      { userId: 'telegram:42', channel: 'telegram', conversationRef: { kind: 'channel', channelId: CHANNEL_ID, conversationId: '-100777' } },
+      { userId: 'telegram:42', channel: 'telegram', conductorBinding: false, conversationRef: { kind: 'channel', channelId: CHANNEL_ID, conversationId: '42', asChannelKey: MIRA_KEY } },
+      { userId: 'telegram:42', channel: 'telegram', conductorBinding: false, conversationRef: { kind: 'channel', channelId: CHANNEL_ID, conversationId: '-100777' } },
     ]);
   });
 

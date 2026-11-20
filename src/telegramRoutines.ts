@@ -52,7 +52,9 @@ export function createTelegramRoutineTurn(
       conversationId: String(chatId),
       ...(asChannelKey ? { asChannelKey } : {}),
     };
-    return routines.beginRoutineTurn({ userId, channel: TELEGRAM_ROUTINE_CHANNEL, conversationRef });
+    // Triggers and routines only: a group or an agent's bot is not where the
+    // person's Conductor reminders go (`conductorBinding: false`).
+    return routines.beginRoutineTurn({ userId, channel: TELEGRAM_ROUTINE_CHANNEL, conversationRef, conductorBinding: false });
   };
 }
 

@@ -213,15 +213,6 @@ export async function activate(
     core.log('info', 'kernel has no send providers — agents cannot post through Telegram');
   }
 
-  // Trigger and routine deliveries go out through the bot the conversation
-  // came through: an agent's own bot, or the installation's with a name line.
-  if (routines) {
-    routines.publishProactiveSend(
-      TELEGRAM_ROUTINE_CHANNEL,
-      createTelegramProactiveSend((asChannelKey) => fleet.sendDepsFor(asChannelKey)),
-    );
-    core.log('info', 'telegram proactive send registered (triggers and routines deliver through the bot they were set on)');
-  }
 
   // Webhooks: agents' own bots under /api/telegram/agent-bots/<botId>/webhook
   // (registered first, the more specific prefix), the installation's own bot
@@ -239,6 +230,15 @@ export async function activate(
   core.registerRouter(ctx.agentId, WEBHOOK_PATH_PREFIX, router);
   core.log('info', `Telegram webhook router mounted at ${WEBHOOK_PATH_PREFIX}/webhook`);
   await defaultBot.start();
+
+  // Trigger and routine deliveries go out through the bot the conversation
+  // came through: an agent's own bot, or the installation's with a name line.
+  // Registered once the bot runs, removed again on close.
+  const disposeProactiveSend = routines?.publishProactiveSend(
+    TELEGRAM_ROUTINE_CHANNEL,
+    createTelegramProactiveSend((asChannelKey) => fleet.sendDepsFor(asChannelKey)),
+  );
+  if (routines) core.log('info', 'telegram proactive send registered (triggers and routines deliver through the bot they were set on)');
 
   // --- Agents' own bots (spec 2042 §5.3) --------------------------------
   // Needs the vault write permission (tokens are stored per bot) and a kernel
@@ -375,6 +375,7 @@ export async function activate(
 
   return {
     close: async () => {
+      if (typeof disposeProactiveSend === 'function') disposeProactiveSend();
       await fleet.stopAll();
       await defaultBot.stop();
       core.log('info', 'Telegram channel closed (routes now 503)');
