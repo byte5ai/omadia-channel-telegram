@@ -42,6 +42,7 @@ import { PairingTokenRegistry } from './pairingTokens.js';
 import { TelegramRosterProvider } from './telegramRoster.js';
 import { GroupMemberTracker } from './groupMemberTracker.js';
 import { registerBotCommands } from './botCommands.js';
+import { TelegramConversationRosterProvider } from './conversationRoster.js';
 import { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 import {
   TELEGRAM_ALLOWED_UPDATES,
@@ -150,6 +151,24 @@ export async function activate(
   const pairingTokens = new PairingTokenRegistry();
   const pairingStore = new PairingStore(memoryStore);
   core.log('info', 'telegram pairing store ready (memoryStore-backed)');
+
+  // The room's membership for the kernel's audience floor (spec 2042 §5.11).
+  // Honest by construction: `complete` only when proven, `partial` when only
+  // administrators and seen members are known. Feature-detected: older
+  // kernels have no roster registry.
+  if (typeof core.registerRosterProvider === 'function') {
+    core.registerRosterProvider(
+      ctx.agentId,
+      new TelegramConversationRosterProvider({
+        roster: rosterProvider,
+        pairingStore,
+        bot: { id: me.id, username: me.username ?? '' },
+      }),
+    );
+    core.log('info', 'telegram conversation roster registered with the kernel');
+  } else {
+    core.log('info', 'kernel has no roster registry — conversation roster not registered');
+  }
 
   // Native "/" menu: /agent. The kernel parses the text; we only pass it on.
   await registerBotCommands(api, (level, message) => core.log(level, message));

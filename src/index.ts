@@ -38,6 +38,16 @@ export { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
 export { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 export { BOT_COMMANDS, registerBotCommands } from './botCommands.js';
 export {
+  TelegramConversationRosterProvider,
+  type TelegramConversationRosterDeps,
+} from './conversationRoster.js';
+
+export {
+  createTelegramWebhookRouter,
+  type TelegramRouterDeps,
+} from './messagesRouter.js';
+
+export {
   MAX_VERIFIED_MEMBERS,
   TelegramRosterProvider,
   type RosterSnapshot,

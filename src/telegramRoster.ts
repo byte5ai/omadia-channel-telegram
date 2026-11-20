@@ -37,6 +37,8 @@ export interface RosterSnapshot {
   participants: ChatParticipant[];
   /** True only when `participants` + this bot is provably the whole chat. */
   complete: boolean;
+  /** When the platform was asked, ISO 8601 UTC; a cached snapshot keeps its original time. */
+  readAt?: string;
 }
 
 interface CacheEntry {
@@ -69,7 +71,10 @@ export class TelegramRosterProvider {
     const now = Date.now();
     const cached = this.cache.get(chatId);
     if (cached && cached.expiresAt > now) return cached.snapshot;
-    const snapshot = await this.build(chatId);
+    const snapshot: RosterSnapshot = {
+      ...(await this.build(chatId)),
+      readAt: new Date(now).toISOString(),
+    };
     this.cache.set(chatId, { snapshot, expiresAt: now + this.ttlMs });
     return snapshot;
   }
