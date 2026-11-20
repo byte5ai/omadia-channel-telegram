@@ -22,6 +22,8 @@ the plugin runs its own bot only, as before.
   bot (unknown key: unreachable); `presentIn` tells the kernel which agent
   bots are members of a group.
 - **Group activations per bot**, DM pairings shared.
+- **`compat.core` `>=1.79.0 <2.0`** (placeholder): needs the kernel with agent
+  channel identities (S7). The parent session sets the final range on release.
 
 ## 0.4.0
 
