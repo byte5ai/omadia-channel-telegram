@@ -54,6 +54,14 @@ export {
   type TelegramSendDeps,
 } from './telegramSend.js';
 export {
+  TELEGRAM_ROUTINE_CHANNEL,
+  createTelegramProactiveSend,
+  createTelegramRoutineTurn,
+  parseDeliveryRef,
+  type TelegramDeliveryRef,
+  type TelegramRoutineTurn,
+} from './telegramRoutines.js';
+export {
   TelegramConversationRosterProvider,
   type TelegramConversationRosterDeps,
 } from './conversationRoster.js';

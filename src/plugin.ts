@@ -23,7 +23,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import express, { Router } from 'express';
-import type { PluginContext, MemoryStore } from '@omadia/plugin-api';
+import type { PluginContext, MemoryStore, RoutinesIntegration } from '@omadia/plugin-api';
+import { createTelegramProactiveSend, ROUTINES_INTEGRATION_SERVICE, TELEGRAM_ROUTINE_CHANNEL } from './telegramRoutines.js';
 import {
   CHANNEL_RESOLVER_SERVICE,
   resolveChannelRoute,
@@ -89,6 +90,9 @@ export async function activate(
       "memoryStore service not published — @omadia/memory must be active before this channel (declare 'memoryStore@1' in requires).",
     );
   }
+  // Triggers and routines (spec 2042 §5.12): published by the kernel only
+  // with a database. Absent = agents cannot set triggers or routines here.
+  const routines = ctx.services.get<RoutinesIntegration>(ROUTINES_INTEGRATION_SERVICE);
   const krokiBaseUrl = process.env['KROKI_BASE_URL'];
 
   const botToken = await ctx.secrets.require('telegram_bot_token');
@@ -173,6 +177,7 @@ export async function activate(
     memberTracker,
     webhookSecret,
     publicBaseUrl: publicBaseUrl || undefined,
+    ...(routines ? { routines } : {}),
   };
   const defaultBot = createBotRuntime(shared, api, me, { agentBot: false });
   const fleet = new TelegramBotFleet(defaultBot);
@@ -206,6 +211,16 @@ export async function activate(
     );
   } else {
     core.log('info', 'kernel has no send providers — agents cannot post through Telegram');
+  }
+
+  // Trigger and routine deliveries go out through the bot the conversation
+  // came through: an agent's own bot, or the installation's with a name line.
+  if (routines) {
+    routines.publishProactiveSend(
+      TELEGRAM_ROUTINE_CHANNEL,
+      createTelegramProactiveSend((asChannelKey) => fleet.sendDepsFor(asChannelKey)),
+    );
+    core.log('info', 'telegram proactive send registered (triggers and routines deliver through the bot they were set on)');
   }
 
   // Webhooks: agents' own bots under /api/telegram/agent-bots/<botId>/webhook

@@ -198,10 +198,15 @@ integrations:
 #                           absence is survivable (a host without the registry
 #                           routes to the default chatAgent; with the registry
 #                           chatAgent@1 is never a fallback).
+#   - `routinesIntegration@1` — kernel-side, only with a database: each turn
+#                           opens its routines scope (triggers, routines) and
+#                           deliveries go out through the bot they were set
+#                           on. Absent = agents set no triggers here.
 requires:
   - "chatAgent@^1"
   - "memoryStore@^1"
 optional_requires:
   - "channelResolver@1"
+  - "routinesIntegration@1"
   - "turnContext@1"
 provides: []

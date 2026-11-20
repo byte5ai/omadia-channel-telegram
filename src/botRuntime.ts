@@ -16,7 +16,7 @@
 
 import { createHmac } from 'node:crypto';
 
-import type { MemoryStore } from '@omadia/plugin-api';
+import type { MemoryStore, RoutinesIntegration } from '@omadia/plugin-api';
 import { InMemoryConversationHistoryStore, type ConversationMessageEvent, type CoreApi } from '@omadia/channel-sdk';
 
 import type { ChannelRouteLookup } from './agentResolution.js';
@@ -37,6 +37,7 @@ import {
   type TelegramUser,
 } from './telegramBot.js';
 import { TelegramEmitter } from './telegramEmitter.js';
+import { createTelegramRoutineTurn } from './telegramRoutines.js';
 import { TelegramRosterProvider } from './telegramRoster.js';
 import type { TelegramSendDeps } from './telegramSend.js';
 
@@ -64,6 +65,8 @@ export interface SharedBotDeps {
   readonly webhookSecret: string;
   /** `undefined` = long-polling. */
   readonly publicBaseUrl: string | undefined;
+  /** The kernel's routines surface; absent = no triggers or routines here. */
+  readonly routines?: Pick<RoutinesIntegration, 'beginRoutineTurn'> | undefined;
 }
 
 export interface TelegramBotRuntime {
@@ -122,6 +125,10 @@ export function createBotRuntime(
     dmPolicy: shared.dmPolicy,
     botIdentity: { id: me.id, username },
     agentBot,
+    // A delivery the agent sets here goes out through this bot later.
+    ...(shared.routines
+      ? { routineTurn: createTelegramRoutineTurn(shared.routines, shared.channelId, agentBot ? botKey : undefined) }
+      : {}),
   });
   const sendDeps: TelegramSendDeps = {
     emitter: new TelegramEmitter({ api, speakerHistory: shared.speakerHistory, nativeIdentity: agentBot }),

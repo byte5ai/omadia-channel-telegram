@@ -52,6 +52,7 @@ import {
   type EmissionRecord,
   type SpeakerHistoryReader,
 } from './telegramEmitter.js';
+import type { TelegramRoutineTurn } from './telegramRoutines.js';
 import { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
 import { telegramBotKey, type TelegramConversationMessages } from './conversationMessages.js';
 
@@ -521,6 +522,12 @@ export interface TelegramBotOptions {
    * answers as another, so a key the kernel does not know is refused.
    */
   agentBot?: boolean;
+  /**
+   * Spec 2042 §5.12 — opens the kernel's routines scope for a person's turn,
+   * so the agent may set triggers and routines that deliver back here (through
+   * this bot). Absent = the kernel publishes no routines (no database).
+   */
+  routineTurn?: TelegramRoutineTurn;
 }
 
 /** Telegram keeps the "typing…" state for about 5 s, so renew it every 4 s. No reply window. */
@@ -579,6 +586,7 @@ export class TelegramBot {
   private readonly channelResolver?: ChannelRouteLookup;
   private readonly conversationMessages?: TelegramConversationMessages;
   private readonly agentBot: boolean;
+  private readonly routineTurn: TelegramRoutineTurn | undefined;
   constructor(opts: TelegramBotOptions) {
     this.api = opts.api;
     this.chatAgent = opts.chatAgent;
@@ -594,6 +602,7 @@ export class TelegramBot {
       ...(opts.agentBot ? { nativeIdentity: true } : {}),
     });
     this.agentBot = opts.agentBot === true;
+    this.routineTurn = opts.routineTurn;
     this.pendingReplies = new PendingReplyStore(opts.pendingReplyTtlMs);
     this.paceProfile = opts.paceProfile ?? TELEGRAM_PACE_PROFILE;
     this.paceClock = opts.paceClock;
@@ -1332,9 +1341,13 @@ export class TelegramBot {
         // acknowledgement when the work clearly takes longer, no progress
         // chatter. Telegram has no reply window, so the answer is always an
         // ordinary message.
+        // The routines scope wraps the whole turn: who asks, and where a
+        // trigger or routine the agent sets now delivers later.
+        const inRoutineScope = <T,>(body: () => Promise<T>): Promise<T> =>
+          this.routineTurn && userId ? this.routineTurn({ userId, chatId: input.chat.id })(body) : body();
         const { result } = await runPacedTurn(
           () =>
-            chatAgent.chat({
+            inRoutineScope(() => chatAgent.chat({
               userMessage: input.userMessage,
               sessionScope,
               origin,
@@ -1351,7 +1364,7 @@ export class TelegramBot {
                 ? { attachments: input.attachments }
                 : {}),
               userTimeZone: 'Europe/Berlin',
-            }),
+            })),
           this.paceProfile,
           {
             sendTyping: async () => {

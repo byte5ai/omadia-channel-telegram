@@ -74,7 +74,14 @@ with its own derived secret, or long-polling) and returns the routing key
   bot. The DM pairing is shared by all bots of the installation, because it
   says which Telegram user is which person, a fact about the person and not
   about a bot; pairing once is enough for every agent's bot;
-- removing the bot on the agent page stops it and deletes its token.
+- removing the bot on the agent page stops it and deletes its token;
+- **triggers and routines** an agent sets in a conversation ("remind me
+  tomorrow at 9", a weekly report) are delivered later through the bot the
+  conversation runs through: through Mira's bot as Mira, through the
+  installation's bot named like an answer. Every turn opens the kernel's
+  routines scope (`routinesIntegration@1`, only with a database), which is
+  what offers the agent these tools here; a bot that was removed or given to
+  another agent delivers nothing.
 
 Agents without a bot of their own are reached through the installation's own
 bot with `/agent` (below). Its routing key is `tg:<botId>` too; the operator

@@ -42,7 +42,7 @@ export const TELEGRAM_SEND_CAPABILITIES: SendProviderCapabilities = Object.freez
 
 /** One bot the providers can post as. */
 export interface TelegramSendDeps {
-  readonly emitter: Pick<TelegramEmitter, 'sendPosted'>;
+  readonly emitter: Pick<TelegramEmitter, 'sendPosted' | 'sendAnswer' | 'sendSystem'>;
   readonly pairingStore: PairingStore;
   readonly dmPolicy: DmPolicy;
   /** `tg:<botId>`. */
@@ -98,21 +98,29 @@ function posterFor(lookup: TelegramBotLookup, asChannelKey: string | undefined):
   return new TelegramPoster(bot);
 }
 
+/**
+ * Why this bot may not post into `chatId`, or undefined: a group must have
+ * activated THIS bot, a person must pass the DM policy (pairing is shared).
+ */
+export async function blockedReason(deps: TelegramSendDeps, chatId: number): Promise<Unreachable | undefined> {
+  if (chatId < 0) {
+    return (await deps.pairingStore.getGroupActivation(chatId))
+      ? undefined
+      : unreachable('not_permitted', `the bot is not activated in chat ${String(chatId)}`);
+  }
+  const decision = await evaluateDmPolicy({
+    policy: deps.dmPolicy,
+    telegramUserId: chatId,
+    store: deps.pairingStore,
+  });
+  return decision.allow ? undefined : unreachable('not_permitted', `chat ${String(chatId)} may not DM the bot (policy ${deps.dmPolicy})`);
+}
+
 class TelegramPoster {
   constructor(private readonly deps: TelegramSendDeps) {}
 
-  async canPostTo(chatId: number): Promise<Unreachable | undefined> {
-    if (chatId < 0) {
-      return (await this.deps.pairingStore.getGroupActivation(chatId))
-        ? undefined
-        : unreachable('not_permitted', `the bot is not activated in chat ${String(chatId)}`);
-    }
-    const decision = await evaluateDmPolicy({
-      policy: this.deps.dmPolicy,
-      telegramUserId: chatId,
-      store: this.deps.pairingStore,
-    });
-    return decision.allow ? undefined : unreachable('not_permitted', `chat ${String(chatId)} may not DM the bot (policy ${this.deps.dmPolicy})`);
+  canPostTo(chatId: number): Promise<Unreachable | undefined> {
+    return blockedReason(this.deps, chatId);
   }
 
   async post(chatId: number, message: TargetedMessage, isDirect: boolean): Promise<TargetedDeliveryOutcome> {
