@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 An agent's own Telegram bot (byte5ai/omadia#2042, spec §5.3, §8 item 20).
 Needs a kernel with `registerAgentIdentityProvider` (S7); on an older kernel
@@ -31,8 +31,8 @@ the plugin runs its own bot only, as before.
   These turns never become a person's Conductor reminder target
   (`conductorBinding: false`), and the proactive send is removed when the
   channel closes.
-- **`compat.core` `>=1.79.0 <2.0`** (placeholder): needs the kernel with agent
-  channel identities (S7). The parent session sets the final range on release.
+- **`compat.core` `>=1.79.0 <2.0`**: needs the kernel with agent channel
+  identities (plugin-api 1.79.0, S7).
 
 ## 0.4.0
 

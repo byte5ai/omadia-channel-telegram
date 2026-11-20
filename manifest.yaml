@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-telegram"
   name: "Telegram Channel"
-  version: "0.4.0"
+  version: "0.5.0"
   kind: "channel"
   domain: "channel.telegram"
   description: "Telegram als zweiter First-Class-Channel von Omadia. Spricht die Telegram Bot API direkt (kein Drittanbieter-SDK), supports Webhook + Long-Polling-Fallback, Antworten als Klartext (Absender nur wo nötig, Beiträge anderer Agenten als \"Name: …\", Auswahl per Nummer statt Buttons), Agentenwahl per /agent, ehrlicher Gruppen-Roster (complete/partial/unknown), eigener Bot pro Agent möglich. Self-contained — keine `depends_on`-Beziehung. Validiert die @omadia/channel-sdk Contracts gegen ein Runtime ohne Bot-Framework."
@@ -17,9 +17,9 @@ identity:
     - "communication"
 
 compat:
-  # Placeholder for the kernel that ships agent channel identities (S7: the
-  # SDK's registerAgentIdentityProvider, asChannelKey per bot, agent_own_bot).
-  # Expected plugin-api 1.79.0; the parent session sets the final range when it lands.
+  # The kernel that ships agent channel identities (plugin-api 1.79.0, S7):
+  # registerAgentIdentityProvider, asChannelKey per bot, agent_own_bot, the
+  # proactive send's speaker and disposer, RoutineTurnInput.conductorBinding.
   core: ">=1.79.0 <2.0"
   node: ">=20"
 
