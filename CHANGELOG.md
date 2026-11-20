@@ -19,9 +19,33 @@ before that kernel runs.
   declared element is the AI disclosure line, which is part of the text.
 - **Numbered questions** (choice, topic, slots) are answered by number or
   label; the reply becomes the value a button tap carried.
-- **`/agent`** is registered with `setMyCommands` (default and `de`) and
-  passed to the kernel unchanged, `/agent@Bot …` included. Selection
-  exchanges are not added to the conversation history.
+- **`/agent`, `/agents`** are registered with `setMyCommands` (default and
+  `de`) and passed to the agent behind the channel resolver unchanged,
+  `/agent@Bot …` included. `/agent` without a name clears the selection,
+  `/agents` lists (the menu text said "/agent for the list" before; wrong).
+  Selection exchanges are not added to the conversation history. In groups a
+  bare `/agent` and `/agents` pass the addressing filter (other commands
+  without `@Bot` stay ignored), see the README for why.
+- **S1 routing contract** (`agentResolution.ts`): `channelResolver@1` is looked
+  up per turn and answers `bound` (agent plus speaker) or `reject` (agent for
+  `/agent`, plus the `system` notice). The `fallback` decision no longer
+  exists. A rejected turn is answered by `system` only; a throwing resolver is
+  not a rejection and uses the default agent. Keys tried: chat id,
+  `@bot_username`, bare username.
+- **One principal form**: the sender is `user:telegram-chat:<id>`
+  (`channelUserPrincipal` / `turnPrincipal` from the SDK) for routing and in
+  the turn origin; the former `telegram:<id>` principal is gone. The turn origin
+  also states `conversationType`, `channelConversationId`, `messageId` and
+  `speaker`. `ChatTurnInput.userId` keeps the `telegram:<id>` spelling (a
+  trace and pairing key, not a principal).
+- **Pace acknowledgement under the agent**: sent as the announced speaker, in
+  the sender's language (`de`/`en` from Telegram's `language_code`). Without an
+  announced speaker it is not sent (typing carries the wait). It is no longer
+  a `system` message.
+- **Fail closed without a speaker**: an agent answer with no speaker is
+  withheld and replaced by a `system` notice (before: posted without
+  attribution plus a warning). A system notice is something the person must
+  see; a nameless agent message is something that must not exist.
 - **Speaker history persisted** under `/memories/pairings/speaker-history/`
   so the name line is correct after a restart.
 - **Conversation roster for the kernel** (`ConversationRosterProvider`,
@@ -31,10 +55,21 @@ before that kernel runs.
 - **Pace** via `runPacedTurn`: typing from the start, renewed every 4 s, one
   acknowledgement after 8 s, no progress messages, no reply window.
 - Fixed: the "not paired" refusal showed MarkdownV2 backslashes.
+- **Agents post through Telegram** (criterion 30): conversation and targeted
+  send providers, declared honestly (`asChannelKey` only for this bot's own
+  key `@<bot_username>`; polls and one-question cards as numbered text, answered
+  by a reply and delivered as typed `card_answer` events; no mentions, no card
+  update). Facilitation contributions are recorded as `created` events per the
+  kernel's delivery mode (`all` / `addressed` / `none`). Polls and cards are
+  declared only when the kernel offers the inbound seams. See README.
+- **compat.core** `>=1.74.0 <2.0` (placeholder; the parent session sets the
+  final range with the release).
 - Own identity per agent (one bot token per agent) is **not** supported; the
   README says why and what it would cost.
 - Tests: emitter paths (criterion 5), plain text, parity and decorations
-  (29, 30, 31), roster, command menu, pace.
+  (29, 30, 31), roster, command menu, pace, routing (reject notice, speaker
+  ack, principal form, `/agent` pass-through, group addressing), send providers,
+  polls and facilitation through plain text (criterion 30).
 
 ## 0.3.0
 

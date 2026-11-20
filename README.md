@@ -27,8 +27,9 @@ relationship to other integrations.
 | Transport | Telegram Bot API directly (no third-party SDK) — webhook + optional long-polling fallback (`telegramBot.ts`) |
 | Output | One emitter for every message (`telegramEmitter.ts`): the SDK's plain-text renderer, HTML formatting from Markdown (`markdownToHtml.ts`), no buttons, reactions or footers |
 | Roster | Verified group audience (`telegramRoster.ts`) and the kernel-facing `ConversationRosterProvider` with an honest status (`conversationRoster.ts`) |
-| Agent choice | Native `/agent` command (`botCommands.ts`); parsing and selection belong to the kernel |
-| Pace | Typing indicator, one acknowledgement for long work (SDK `runPacedTurn`) |
+| Agent choice | Native `/agent` and `/agents` commands (`botCommands.ts`); the channel passes the text on, the resolver's agent carries them out (`agentResolution.ts`) |
+| Pace | Typing indicator, one acknowledgement for long work under the agent's name (SDK `runPacedTurn`) |
+| Agent posts | Conversation and targeted send providers (`telegramSend.ts`); polls and cards as numbered text, answers by reply (`openCards.ts`, `conversationMessages.ts`) |
 | Pairing | Token-based account pairing (`pairingStore.ts`, `pairingTokens.ts`) |
 | DM policy | `dmPolicyGuard.ts` |
 | Admin UI | `adminRouter.ts` + static assets under `ui/`, copied into `dist/` at build time |
@@ -60,17 +61,32 @@ resolved through `channelResolver@1`), and **other agents are reached with
 would be one BotFather bot and one token per agent plus a plugin that
 manages several of them; that is not implemented.
 
-### Choosing an agent: `/agent`
+### Choosing an agent: `/agent`, `/agents`
 
 - `/agent Mira` selects the agent Mira for you in this conversation.
-- `/agent` lists the agents available to you here.
+- `/agent` without a name clears your selection; the binding or default applies
+  again.
+- `/agents` lists the agents available to you here.
 
-The command appears in the bot's "/" menu (English and German description). The
-plugin does **not** parse it: the text goes to the kernel unchanged, which
-checks availability, stores your selection (per user and conversation, it
-survives restarts) and confirms with a short notice. In groups use the form
-Telegram suggests, `/agent@YourBot Mira`; a command without `@YourBot` is not
-addressed to this bot and is ignored.
+Both commands appear in the bot's "/" menu (English and German description).
+The plugin does **not** handle them: the text goes to the agent behind the
+kernel's channel resolver unchanged. It checks availability, stores your
+selection (per user and conversation, it survives restarts) and confirms with a
+short `system` notice. The plugin has no selection code of its own.
+
+**In groups.** A command without `@YourBot` is normally ignored (it may be meant
+for another bot). `/agent` and `/agents` are the exception and are let through
+without the suffix: Telegram clients only add `@YourBot` when several bots in
+the group know the command, so requiring it would make `/agent` from the "/"
+menu dead in the usual single-bot group. `/agent@OtherBot` is still ignored.
+With **several** omadia bots in one group, keep BotFather privacy mode **on**
+(Telegram then delivers a bare command only to the bot that spoke last) or use
+the `@YourBot` form; with privacy off every bot sees the bare command and each
+answers it.
+
+When no agent may answer a turn (agent disabled, not available to you, nothing
+bound) the kernel says why in a `system` notice and the plugin posts it. It is
+never an agent's answer, and there is no fallback agent.
 
 ### What answers look like
 
@@ -90,11 +106,42 @@ Plain text, like a colleague's message.
   SDK's registry. The AI disclosure line is part of the text and follows the
   operator's frequency setting. Details stay in the structured answer.
 - **Pace:** the typing indicator while the agent works, and one "I'm on it"
-  message when the work clearly takes longer.
+  message when the work clearly takes longer. The message comes from the agent
+  (the resolver announces it before the answer), so it carries the agent's
+  name where the name line is due. Without an announced agent no
+  acknowledgement is sent; the typing indicator carries the wait.
+- **No speaker, no answer:** an agent answer that names no speaker is not
+  posted. The person gets a short `system` notice, the problem is logged.
+
+### Polls, questions and facilitation in plain text
+
+Everything an agent can do with a card works as text. The plugin registers a
+conversation send and a targeted send (DM) provider with the kernel:
+
+- A poll or a one-question card is posted as a numbered list plus "Antworte
+  direkt auf diese Nachricht." Reply with the number or the label (several
+  numbers for multiple choice and rankings, `ja` / `einwand: Grund` for
+  consent, a number or `YYYY-MM-DD`). The reply reaches the kernel as the same
+  typed answer a card would carry. In a group only a **reply to that message**
+  counts (it also reaches the bot with privacy mode on); in a private chat the
+  next message does when it parses. Open questions survive a restart.
+- Only kinds a typed reply answers unambiguously are declared (single and
+  multiple choice, ranking, consent, number, date), one question per card. The
+  kernel falls back to a chat ballot for the rest. A posted question cannot be
+  updated into a result card.
+- In a conversation the kernel subscribed an agent to, what people write is
+  recorded with the author Telegram states (`all` mode: no turn is started;
+  `addressed` mode: what addresses the bot). Edits and deletions are not
+  recorded (Telegram does not report them to this plugin). With BotFather
+  privacy mode on the bot only sees mentions, commands and replies, so a
+  facilitation that needs every message needs privacy mode off.
+- The own-identity key of this bot is `@<bot_username>`. A send that names
+  another identity is refused, nothing is posted under a different name.
 
 ### Groups
 
-The bot answers when addressed (mention, reply, or `/command@YourBot`).
+The bot answers when addressed (mention, reply, `/command@YourBot`, or a bare
+`/agent` / `/agents`).
 Telegram gives bots no member list, so the roster the plugin reports to the
 kernel says how much it could read: `complete` only when every member is
 proven (small groups the bot has watched, matching `getChatMemberCount`),

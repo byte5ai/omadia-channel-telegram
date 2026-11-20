@@ -17,7 +17,10 @@ identity:
     - "communication"
 
 compat:
-  core: ">=1.0 <2.0"
+  # Placeholder for the kernel that ships the S1 routing contract (reject notices,
+  # speaker before the answer, SDK principal, /agent handled by the resolver's
+  # ChatAgent). The parent session sets the final range with the release.
+  core: ">=1.74.0 <2.0"
   node: ">=20"
 
 lifecycle:
@@ -125,7 +128,10 @@ playbook:
     (Bot-API-Limitierung — non-admin Members bleiben für den Orchestrator
     unsichtbar). Antworten sind Klartext ohne Buttons, Reaktionen oder
     Fußzeilen; eine Installation ist eine Bot-Identität, mehrere Agenten
-    werden per `/agent <Name>` gewählt (der Kernel verwaltet die Auswahl).
+    werden per `/agent <Name>` gewählt (`/agent` ohne Namen löscht die Auswahl,
+    `/agents` listet; der Agent hinter dem Resolver führt es aus, der Kanal reicht
+    nur den Text durch). Fragen und Abstimmungen eines Agenten kommen als
+    nummerierter Klartext und werden per Antwort auf die Nachricht beantwortet.
 
 permissions:
   # Auto-generate + persist telegram_webhook_secret AND telegram_admin_token on
