@@ -10,8 +10,8 @@
 
 import type {
   AgentSpeaker,
-  ChannelBindingResolver,
   ChannelResolveResult,
+  ChannelRouteContext,
   SystemNotice,
 } from '@omadia/channel-sdk';
 
@@ -36,54 +36,89 @@ export type AgentResolution =
       readonly kind: 'refused';
       readonly agent?: ChatAgent;
       readonly notice?: SystemNotice;
+    }
+  | {
+      /** The resolver exists but failed. Nothing answers: there is no agent to fall back to. */
+      readonly kind: 'unavailable';
     };
 
 /** Who is asking and in which language the kernel writes its notices. */
 export interface TelegramRouteContext {
   /** `turnPrincipal(...)`; absent when Telegram named no sender. */
   readonly principal?: string;
+  /** `de` / `en` from the sender's Telegram `language_code`. */
   readonly locale: string;
 }
 
-/** The resolver as the bot consumes it: looked up per turn, absent without a registry. */
-export type ChannelResolverLookup = () => Pick<ChannelBindingResolver, 'resolve'> | undefined;
+/**
+ * One routing lookup: the SDK's `resolveChannelRoute(ctx, type, key, context)`.
+ * `undefined` means the host publishes no resolver (no multi-agent registry).
+ */
+export type ChannelRouteLookup = (
+  channelType: string,
+  channelKey: string,
+  context: ChannelRouteContext,
+) => ChannelResolveResult | undefined;
+
+/** Kernel `match` of a result; not (yet) part of the SDK type, read structurally. */
+function matchOf(result: ChannelResolveResult): string | undefined {
+  const match = (result as { match?: unknown }).match;
+  return typeof match === 'string' ? match : undefined;
+}
 
 /**
- * Per-turn resolution. `channelKeys` are tried most specific first (chat id,
- * then the bot's `@username`); a `bound` decision wins immediately, otherwise
- * the first rejection stands.
+ * Per-turn resolution. `channelKeys` are probed narrowest first (chat id, then
+ * the bot's `@username` and bare username), and the choice follows the S1 rule
+ * that an agent selection hangs at the key the resolver was called with:
  *
- * `defaultAgent` serves only a host WITHOUT the resolver (single-agent or
- * Postgres-less deployment) and a resolver that throws, so a hiccup never
- * drops a turn. A throwing resolver is not a rejection.
+ *  1. an `exclusive` result (the key IS an agent's own bot) wins over everything;
+ *  2. otherwise the first `bound` result that something DECIDED for this key
+ *     (a selection, a binding, an explicit address), narrowest key first;
+ *  3. otherwise a `bound` result that is only the instance's default-agent
+ *     table (`match: 'default'`, identical for every key, so it must not
+ *     shadow a binding on a wider key);
+ *  4. otherwise the first rejection: its agent still carries out `/agent` and
+ *     stores the selection at the chat, its notice is posted.
+ *
+ * A result without `match` (older kernel) counts as decided, so the first
+ * `bound` wins as before.
+ *
+ * There is NO fallback to the shared `chatAgent@1`: with a resolver it only
+ * refuses. `defaultAgent` serves a host WITHOUT a resolver and nothing else; a
+ * resolver that throws yields `unavailable`, never another agent.
  */
 export function resolveAgentForTurn(
-  lookup: ChannelResolverLookup | undefined,
+  lookup: ChannelRouteLookup | undefined,
   channelKeys: ReadonlyArray<string | undefined>,
   defaultAgent: ChatAgent,
   route: TelegramRouteContext,
   onError: (error: unknown) => void = () => undefined,
 ): AgentResolution {
-  const resolver = lookup?.();
-  if (!resolver) return { kind: 'agent', agent: defaultAgent };
-  let rejection: Extract<AgentResolution, { kind: 'refused' }> | undefined;
+  const context: ChannelRouteContext = {
+    ...(route.principal ? { principal: route.principal } : {}),
+    locale: route.locale,
+  };
+  const results: ChannelResolveResult[] = [];
   try {
     for (const key of channelKeys) {
       if (!key) continue;
-      const result = resolver.resolve(CHANNEL_TYPE, key, {
-        ...(route.principal ? { principal: route.principal } : {}),
-        locale: route.locale,
-      });
-      if (result.decision === 'bound' && result.chatAgent) {
-        return { kind: 'agent', agent: result.chatAgent, ...(result.speaker ? { speaker: result.speaker } : {}) };
-      }
-      rejection ??= rejectionOf(result);
+      const result = lookup?.(CHANNEL_TYPE, key, context);
+      if (result === undefined) return { kind: 'agent', agent: defaultAgent };
+      results.push(result);
     }
   } catch (err) {
     onError(err);
-    return { kind: 'agent', agent: defaultAgent };
+    return { kind: 'unavailable' };
   }
-  return rejection ?? { kind: 'agent', agent: defaultAgent };
+  const exclusive = results.find((r) => r.exclusive === true);
+  const decided = results.find((r) => r.decision === 'bound' && r.chatAgent && matchOf(r) !== 'default');
+  const byDefault = results.find((r) => r.decision === 'bound' && r.chatAgent);
+  const winner = exclusive ?? decided ?? byDefault;
+  if (winner?.decision === 'bound' && winner.chatAgent) {
+    return { kind: 'agent', agent: winner.chatAgent, ...(winner.speaker ? { speaker: winner.speaker } : {}) };
+  }
+  const rejected = exclusive ?? results[0];
+  return rejected ? rejectionOf(rejected) : { kind: 'unavailable' };
 }
 
 function rejectionOf(result: ChannelResolveResult): Extract<AgentResolution, { kind: 'refused' }> {

@@ -26,8 +26,8 @@ import express, { Router } from 'express';
 import type { PluginContext, MemoryStore } from '@omadia/plugin-api';
 import {
   CHANNEL_RESOLVER_SERVICE,
+  resolveChannelRoute,
   InMemoryConversationHistoryStore,
-  type ChannelBindingResolver,
   type ChannelHandle,
   type CoreApi,
 } from '@omadia/channel-sdk';
@@ -44,6 +44,7 @@ import { GroupMemberTracker } from './groupMemberTracker.js';
 import { registerBotCommands } from './botCommands.js';
 import { TelegramConversationRosterProvider } from './conversationRoster.js';
 import { PersistentSpeakerHistoryStore } from './speakerHistory.js';
+import type { ChannelRouteLookup } from './agentResolution.js';
 import { TelegramConversationMessages } from './conversationMessages.js';
 import { OpenCardStore } from './openCards.js';
 import { createTelegramConversationSend, createTelegramTargetedSend } from './telegramSend.js';
@@ -183,17 +184,18 @@ export async function activate(
   const speakerHistory = new PersistentSpeakerHistoryStore(memoryStore);
 
   // --- Per-turn agent resolution (S1 contract) --------------------------
-  // `channelResolver@1` decides per turn which agent answers (`bound` with its
-  // speaker, or `reject` with a notice; there is no fallback agent). It is
-  // looked up on every turn, not cached here. A host without the registry
-  // publishes no resolver and every turn goes to the default chatAgent@1.
-  const channelResolver = (): ChannelBindingResolver | undefined =>
-    ctx.services.get<ChannelBindingResolver>(CHANNEL_RESOLVER_SERVICE);
+  // The SDK's `resolveChannelRoute` asks `channelResolver@1` on every turn:
+  // `bound` (agent plus speaker) or `reject` (agent for `/agent`, plus the
+  // notice). It returns `undefined` on a host without the registry, and only
+  // then does a turn go to the default chatAgent@1. With a registry that
+  // singleton is a refuser and is never a fallback.
+  const channelRoute: ChannelRouteLookup = (channelType, channelKey, context) =>
+    resolveChannelRoute(ctx, channelType, channelKey, context);
   core.log(
     'info',
-    channelResolver()
+    ctx.services.get(CHANNEL_RESOLVER_SERVICE)
       ? 'Telegram per-turn agent resolution active via channelResolver@1'
-      : 'channelResolver@1 not published — Telegram routes all turns to the default chatAgent',
+      : 'channelResolver@1 not published — Telegram routes all turns to the default chatAgent (host without registry)',
   );
 
   // --- Posting for agents and collecting answers (spec 2042 criterion 30) ---
@@ -228,7 +230,7 @@ export async function activate(
   const bot = new TelegramBot({
     api,
     chatAgent,
-    channelResolver,
+    channelResolver: channelRoute,
     openCards,
     ...(conversationMessages ? { conversationMessages } : {}),
     history: conversationHistoryStore,

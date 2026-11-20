@@ -38,7 +38,7 @@ export {
 export { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
 export { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 export { BOT_COMMANDS, registerBotCommands } from './botCommands.js';
-export { resolveAgentForTurn, type AgentResolution, type ChannelResolverLookup } from './agentResolution.js';
+export { resolveAgentForTurn, type AgentResolution, type ChannelRouteLookup } from './agentResolution.js';
 export { OpenCardStore, type OpenCard } from './openCards.js';
 export {
   TelegramConversationMessages,

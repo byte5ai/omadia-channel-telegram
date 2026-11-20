@@ -35,7 +35,7 @@ import {
   unsharedConversationScope,
   type ScopeId,
 } from '@omadia/channel-sdk';
-import { resolveAgentForTurn, type ChannelResolverLookup } from './agentResolution.js';
+import { resolveAgentForTurn, type ChannelRouteLookup } from './agentResolution.js';
 import { evaluateDmPolicy, type DmPolicy } from './dmPolicyGuard.js';
 import type {
   ChatAgent,
@@ -512,12 +512,12 @@ export interface TelegramBotOptions {
    */
   botIdentity: { id: number; username: string };
   /**
-   * Per-turn agent resolution through the kernel's `channelResolver@1`,
-   * looked up on every turn (see `agentResolution.ts`). The bot tries the chat
-   * id, then `@<bot_username>`, then the bare username. A host without the
-   * resolver (the lookup returns `undefined`) routes to `chatAgent`.
+   * Per-turn agent resolution: the SDK's `resolveChannelRoute` over the kernel's
+   * `channelResolver@1`, called on every turn (see `agentResolution.ts`). The bot
+   * probes the chat id, then `@<bot_username>`, then the bare username. Only a
+   * host WITHOUT a resolver (the lookup returns `undefined`) uses `chatAgent`.
    */
-  channelResolver?: ChannelResolverLookup;
+  channelResolver?: ChannelRouteLookup;
 }
 
 /** Telegram keeps the "typing…" state for about 5 s, so renew it every 4 s. No reply window. */
@@ -528,6 +528,10 @@ export const TELEGRAM_PACE_PROFILE: ChannelPaceProfile = Object.freeze({
 
 /** The notice for a turn nobody answers when the kernel gave no notice of its own. */
 const NO_AGENT_TEXT = 'Für diese Unterhaltung ist kein Agent eingerichtet.';
+
+/** The notice when the resolver failed: no agent is guessed, the turn is not answered. */
+const ROUTING_UNAVAILABLE_TEXT =
+  'Ich kann gerade nicht klären, welcher Agent hier antwortet. Bitte versuch es gleich nochmal.';
 
 /**
  * The language of kernel notices and of the pace acknowledgement: English for
@@ -566,7 +570,7 @@ export class TelegramBot {
   private readonly pairingTokens: PairingTokenRegistry;
   private readonly dmPolicy: DmPolicy;
   private readonly botIdentity: { id: number; username: string };
-  private readonly channelResolver?: ChannelResolverLookup;
+  private readonly channelResolver?: ChannelRouteLookup;
   private readonly openCards?: OpenCardStore;
   private readonly conversationMessages?: TelegramConversationMessages;
   constructor(opts: TelegramBotOptions) {
@@ -1313,10 +1317,14 @@ export class TelegramBot {
       },
       (err) =>
         console.error(
-          `[telegram] channelResolver threw (chat=${String(input.chat.id)}) — using the default agent:`,
+          `[telegram] channelResolver threw (chat=${String(input.chat.id)}) — turn not answered:`,
           err,
         ),
     );
+    if (resolution.kind === 'unavailable') {
+      await this.emitter.sendSystem(input.chat.id, ROUTING_UNAVAILABLE_TEXT);
+      return;
+    }
     if (resolution.kind === 'refused' && !resolution.agent) {
       await this.emitter.sendSystem(input.chat.id, resolution.notice?.text ?? NO_AGENT_TEXT);
       return;

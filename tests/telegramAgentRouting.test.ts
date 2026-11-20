@@ -26,8 +26,8 @@ describe('resolver decisions', () => {
     const h = harness({ channelResolver: resolver.lookup });
     await h.bot.handleUpdate(privateText('hi', 4242));
     assert.deepEqual(texts(h), ['Hallo']);
-    // chat id first, then the bot's own keys; `bound` on the first key ends it
-    assert.deepEqual(resolver.calls.map((c) => c.key), ['4242']);
+    // narrowest key first, then the bot's own keys
+    assert.deepEqual(resolver.calls.map((c) => c.key), ['4242', `@${BOT_USERNAME}`, BOT_USERNAME]);
     assert.equal(resolver.calls[0]?.type, 'telegram');
     assert.equal(resolver.calls[0]?.context?.principal, 'user:telegram-chat:4242');
     assert.equal(resolver.calls[0]?.context?.principal, channelUserPrincipal({ kind: 'telegram-chat', id: '4242' }));
@@ -43,7 +43,7 @@ describe('resolver decisions', () => {
     );
     const h = harness({ channelResolver: resolver.lookup });
     await h.bot.handleUpdate(privateText('hi', 5));
-    assert.deepEqual(resolver.calls.map((c) => c.key), ['5', `@${BOT_USERNAME}`]);
+    assert.deepEqual(resolver.calls.map((c) => c.key), ['5', `@${BOT_USERNAME}`, BOT_USERNAME]);
     assert.deepEqual(texts(h), ['Bot-Ebene']);
   });
 
@@ -91,13 +91,23 @@ describe('resolver decisions', () => {
     assert.deepEqual(texts(h), ['Du sprichst jetzt mit Mira.']);
   });
 
-  it('a throwing resolver is not a rejection: the default agent answers', async () => {
+  it('a throwing resolver answers nothing and falls back to NO agent (chatAgent@1 is a refuser)', async () => {
     const h = harness({
-      channelResolver: () => ({ resolve: () => { throw new Error('db down'); } }) as never,
+      channelResolver: () => {
+        throw new Error('db down');
+      },
     });
-    h.answers.push({ text: 'trotzdem', speaker: speakerA });
     await h.bot.handleUpdate(privateText('hi', 9));
-    assert.deepEqual(texts(h), ['trotzdem']);
+    assert.equal(h.turns.length, 0, 'the singleton agent is not called');
+    assert.deepEqual(h.emissions.map((e) => e.speaker), ['system']);
+    assert.match(texts(h)[0] ?? '', /welcher Agent/);
+  });
+
+  it('only a host WITHOUT a resolver uses the default agent', async () => {
+    const h = harness({ channelResolver: () => undefined });
+    h.answers.push({ text: 'Einzel-Agent', speaker: speakerA });
+    await h.bot.handleUpdate(privateText('hi', 9));
+    assert.deepEqual(texts(h), ['Einzel-Agent']);
   });
 
   it('there is no fallback decision any more: an unknown decision is not served by another agent', async () => {
@@ -117,6 +127,80 @@ describe('resolver decisions', () => {
     delete update.message!.from;
     await h.bot.handleUpdate(update);
     assert.equal(resolver.calls[0]?.context?.principal, undefined);
+  });
+});
+
+describe('locale of the sender (S1 follow-up 2)', () => {
+  const agent = agentThatSays({ text: 'ok', speaker: speakerA });
+  const bound = () => fakeResolver(() => ({ decision: 'bound', chatAgent: agent, speaker: speakerA }));
+
+  it('passes the sender\'s language to every resolve call: English for en, en-GB, EN; German otherwise', async () => {
+    for (const [code, expected] of [['en', 'en'], ['en-GB', 'en'], ['EN', 'en'], ['de', 'de'], ['fr', 'de'], [undefined, 'de']] as const) {
+      const resolver = bound();
+      const h = harness({ channelResolver: resolver.lookup });
+      const update = privateText('hi', 60);
+      update.message!.from = { ...update.message!.from!, ...(code ? { language_code: code } : {}) };
+      await h.bot.handleUpdate(update);
+      assert.ok(resolver.calls.length > 0);
+      for (const call of resolver.calls) assert.equal(call.context?.locale, expected, `language_code ${String(code)}`);
+    }
+  });
+
+  it('a sender without `from` gets German notices', async () => {
+    const resolver = bound();
+    const h = harness({ channelResolver: resolver.lookup });
+    const update = privateText('hi', 61);
+    delete update.message!.from;
+    await h.bot.handleUpdate(update);
+    assert.equal(resolver.calls[0]?.context?.locale, 'de');
+  });
+});
+
+describe('selection key: the key the resolver is called with (S1, spec 2042 §5.3)', () => {
+  const chatId = '77';
+  const mira = agentThatSays({ text: 'Mira', speaker: speakerA });
+  const ben = agentThatSays({ text: 'Ben', speaker: speakerB });
+  const system = { kind: 'system' };
+  const reject = (agent = agentThatSays({ text: 'x', speaker: system })) => ({ decision: 'reject', chatAgent: agent, notice: notice('no_agent', 'x') });
+  const answerOf = async (decide: (key: string) => Record<string, unknown>) => {
+    const h = harness({ channelResolver: fakeResolver(decide).lookup });
+    await h.bot.handleUpdate(privateText('hi', 77));
+    return texts(h)[0];
+  };
+
+  it('a binding on the bot key beats the instance default that every key reports', async () => {
+    const out = await answerOf((key) =>
+      key === `@${BOT_USERNAME}` ? { decision: 'bound', chatAgent: mira, speaker: speakerA, match: 'binding' } : { decision: 'bound', chatAgent: ben, speaker: speakerB, match: 'default' },
+    );
+    assert.equal(out, 'Mira');
+  });
+
+  it('with only the default table, the CHAT key answers, so `/agent` stores its selection per chat', async () => {
+    const out = await answerOf((key) => (key === chatId ? { decision: 'bound', chatAgent: ben, speaker: speakerB, match: 'default' } : { decision: 'bound', chatAgent: mira, speaker: speakerA, match: 'default' }));
+    assert.equal(out, 'Ben');
+  });
+
+  it('a decided chat key (selection or binding) beats the bot key', async () => {
+    const out = await answerOf((key) => (key === chatId ? { decision: 'bound', chatAgent: ben, speaker: speakerB, match: 'selection' } : { decision: 'bound', chatAgent: mira, speaker: speakerA, match: 'binding' }));
+    assert.equal(out, 'Ben');
+  });
+
+  it('an exclusive hit (the key IS an agent\'s own bot) wins whatever came first, an exclusive reject too', async () => {
+    const won = await answerOf((key) => (key === `@${BOT_USERNAME}` ? { decision: 'bound', chatAgent: mira, speaker: speakerA, exclusive: true, match: 'identity' } : { decision: 'bound', chatAgent: ben, speaker: speakerB, match: 'selection' }));
+    assert.equal(won, 'Mira');
+    const refused = await answerOf((key) => (key === `@${BOT_USERNAME}` ? { ...reject(agentThatSays({ text: 'x', speaker: system, systemNotice: notice('agent_disabled', 'Mira ist deaktiviert.') })), notice: notice('agent_disabled', 'Mira ist deaktiviert.'), exclusive: true } : { decision: 'bound', chatAgent: ben, speaker: speakerB, match: 'selection' }));
+    assert.equal(refused, 'Mira ist deaktiviert.');
+  });
+
+  it('no agent anywhere: the CHAT key\'s agent handles `/agent` (selection stored per chat) and its notice stands', async () => {
+    const seen: string[] = [];
+    const chatKeyAgent = agentThatSays({ text: 'x', speaker: system, systemNotice: notice('agent_selected', 'Du sprichst jetzt mit Mira.') }, seen);
+    const h = harness({
+      channelResolver: fakeResolver((key) => (key === chatId ? reject(chatKeyAgent) : reject())).lookup,
+    });
+    await h.bot.handleUpdate(privateText('/agent Mira', 77));
+    assert.deepEqual(seen, ['/agent Mira']);
+    assert.deepEqual(texts(h), ['Du sprichst jetzt mit Mira.']);
   });
 });
 

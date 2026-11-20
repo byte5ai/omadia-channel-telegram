@@ -165,18 +165,17 @@ export interface RouteCall {
 }
 
 /**
- * A fake `channelResolver@1`: `decide` answers per channel key. Records every
- * lookup so a test can read which keys and which principal the bot sent.
+ * A fake `resolveChannelRoute`: `decide` answers per channel key. Records every
+ * lookup so a test can read which keys, principal and locale the bot sent.
  */
-export function fakeResolver(
-  decide: (key: string) => Record<string, unknown>,
-): { readonly lookup: () => { resolve: (...a: never[]) => unknown }; readonly calls: RouteCall[] } {
+export function fakeResolver(decide: (key: string) => Record<string, unknown>): {
+  readonly lookup: (type: string, key: string, context: RouteCall['context']) => never;
+  readonly calls: RouteCall[];
+} {
   const calls: RouteCall[] = [];
-  const resolver = {
-    resolve: (type: string, key: string, context?: RouteCall['context']) => {
-      calls.push({ type, key, context });
-      return decide(key);
-    },
+  const lookup = (type: string, key: string, context: RouteCall['context']) => {
+    calls.push({ type, key, context });
+    return decide(key) as never;
   };
-  return { lookup: () => resolver as never, calls };
+  return { lookup, calls };
 }
