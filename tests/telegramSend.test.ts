@@ -6,16 +6,13 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import { InMemorySpeakerHistoryStore, renderCardAsText } from '@omadia/channel-sdk';
-import type { QuestionCard } from '@omadia/plugin-api';
+import { InMemorySpeakerHistoryStore } from '@omadia/channel-sdk';
 import {
-  ANSWER_HINT,
-  OpenCardStore,
   PairingStore,
+  TELEGRAM_SEND_CAPABILITIES,
   TelegramEmitter,
   createTelegramConversationSend,
   createTelegramTargetedSend,
-  telegramSendCapabilities,
   type DmPolicy,
 } from '@omadia/channel-telegram';
 
@@ -23,7 +20,7 @@ import { BOT_USERNAME, memoryStore, recordingApi } from './fakes.js';
 
 const GROUP = -100777;
 
-async function rig(opts: { dmPolicy?: DmPolicy; canCollectAnswers?: boolean; activate?: boolean; failWith?: string } = {}) {
+async function rig(opts: { dmPolicy?: DmPolicy; activate?: boolean; failWith?: string } = {}) {
   const api = recordingApi();
   if (opts.failWith) {
     (api.client as unknown as { sendMessage: () => Promise<never> }).sendMessage = async () => {
@@ -37,20 +34,16 @@ async function rig(opts: { dmPolicy?: DmPolicy; canCollectAnswers?: boolean; act
       chatId: GROUP, chatTitle: 'Team', chatType: 'supergroup', activatedBy: 'h', activatedVia: 'auto', activatedAt: '2026-11-20T00:00:00Z',
     });
   }
-  const openCards = new OpenCardStore(memoryStore(files));
   const deps = {
     emitter: new TelegramEmitter({ api: api.client, speakerHistory: new InMemorySpeakerHistoryStore() }),
-    openCards,
     pairingStore,
     dmPolicy: opts.dmPolicy ?? ('open' as DmPolicy),
     botUsername: BOT_USERNAME,
-    canCollectAnswers: opts.canCollectAnswers ?? true,
   };
   return {
     api,
     files,
     pairingStore,
-    openCards,
     conversation: createTelegramConversationSend(deps),
     targeted: createTelegramTargetedSend(deps),
   };
@@ -58,34 +51,15 @@ async function rig(opts: { dmPolicy?: DmPolicy; canCollectAnswers?: boolean; act
 
 const texts = (r: Awaited<ReturnType<typeof rig>>): string[] => r.api.sent.map((s) => String(s.params['text']));
 
-const choiceCard: QuestionCard = {
-  cardId: 'budget-vote',
-  proposalId: 'p1',
-  proposalVersion: 2,
-  title: 'Budget 2027',
-  questions: [{ id: 'q1', kind: 'single_choice', label: 'Welche Variante?', options: [{ id: 'a', label: 'Klein' }, { id: 'b', label: 'Groß' }] }],
-};
-
 describe('declared capabilities', () => {
-  it('declare the own identity, polls and one-question text cards; no mentions, no card update, no AI label', () => {
-    const caps = telegramSendCapabilities(true);
-    assert.equal(caps.asChannelKey, true);
-    assert.equal(caps.poll, true);
-    assert.deepEqual(caps.card?.kinds, ['single_choice', 'multiple_choice', 'ranking', 'consent', 'number', 'date']);
-    assert.equal(caps.card?.maxQuestions, 1);
-    assert.equal(caps.card?.update, false);
-    assert.equal(caps.mentions, undefined);
-    assert.equal(caps.aiLabel, undefined);
+  it('declare the own identity and nothing else: no poll, no card, no mentions, no AI label', () => {
+    assert.deepEqual({ ...TELEGRAM_SEND_CAPABILITIES }, { asChannelKey: true });
   });
 
-  it('without the inbound side no poll and no card is declared, and none is posted', async () => {
-    const caps = telegramSendCapabilities(false);
-    assert.equal(caps.poll, undefined);
-    assert.equal(caps.card, undefined);
-    const r = await rig({ canCollectAnswers: false });
-    const out = await r.conversation.sendToConversation(String(GROUP), { text: 'x', card: choiceCard }, { asChannelKey: `@${BOT_USERNAME}` });
-    assert.equal(out.outcome, 'unreachable');
-    assert.equal(r.api.sent.length, 0);
+  it('both providers declare exactly that, so the kernel posts a card or poll as text itself', async () => {
+    const r = await rig();
+    assert.deepEqual({ ...r.conversation.supports }, { asChannelKey: true });
+    assert.deepEqual({ ...r.targeted.supports }, { asChannelKey: true });
   });
 });
 
@@ -135,58 +109,26 @@ describe('conversation send', () => {
   });
 });
 
-describe('questions go out as plain numbered text (criterion 30)', () => {
-  it('a card is the SDK text plus how to answer, and is remembered under its message id', async () => {
+describe('a card or poll that arrives anyway is refused, nothing half posted', () => {
+  it('conversation and targeted send both answer channel_error and post nothing', async () => {
     const r = await rig();
-    const out = await r.conversation.sendToConversation(String(GROUP), { text: 'Bitte abstimmen.', card: choiceCard });
-    assert.equal(out.outcome, 'delivered');
-    assert.equal(out.outcome === 'delivered' && out.cardMessageId, '1');
-    assert.equal(r.api.sent[0]?.params['reply_markup'], undefined, 'no buttons');
-    const body = texts(r)[0] ?? '';
-    assert.match(body, /Bitte abstimmen\./);
-    assert.match(body, /Budget 2027/);
-    assert.match(body, /1\) Klein/);
-    assert.match(body, /2\) Groß/);
-    assert.ok(body.includes(ANSWER_HINT));
-    assert.ok(renderCardAsText(choiceCard).split('\n').every((line) => body.includes(line)));
-
-    const hit = await r.openCards.match({ chatId: GROUP, isPrivate: false, replyToMessageId: 1 });
-    assert.equal(hit?.card.cardId, 'budget-vote');
-    assert.equal(hit?.card.proposalVersion, 2);
-  });
-
-  it('a poll is a single-choice question, its id comes back as the card id', async () => {
-    const r = await rig();
-    await r.conversation.sendToConversation(String(GROUP), {
-      text: 'Wann?',
-      poll: { pollId: 'termin', question: 'Welcher Tag?', options: [{ id: 'mo', label: 'Montag' }, { id: 'di', label: 'Dienstag' }], hint: 'Bis Freitag' },
-    });
-    assert.match(texts(r)[0] ?? '', /1\) Montag/);
-    const hit = await r.openCards.match({ chatId: GROUP, isPrivate: false, replyToMessageId: 1 });
-    assert.equal(hit?.card.kind, 'poll');
-    assert.equal(hit?.card.cardId, 'termin');
-  });
-
-  it('refuses what a typed reply cannot answer: several questions, text and assignment questions', async () => {
-    const r = await rig();
-    const two = { ...choiceCard, questions: [...choiceCard.questions, { id: 'q2', kind: 'number' as const, label: 'Wie viele?' }] };
-    const text = { ...choiceCard, questions: [{ id: 'q1', kind: 'text' as const, label: 'Dein Wunsch?' }] };
-    for (const card of [two, text]) {
-      const out = await r.conversation.sendToConversation(String(GROUP), { text: 'x', card });
-      assert.equal(out.outcome === 'unreachable' && out.code, 'channel_error');
+    const card = { cardId: 'c', title: 't', questions: [{ id: 'q', kind: 'single_choice' as const, label: 'x', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] }] };
+    const poll = { pollId: 'p', question: 'q', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] };
+    for (const message of [{ text: 'x', card }, { text: 'x', poll }]) {
+      const a = await r.conversation.sendToConversation(String(GROUP), message);
+      assert.equal(a.outcome === 'unreachable' && a.code, 'channel_error');
+      const b = await r.targeted.sendToUser({ principalId: 'user:telegram-chat:9' }, message);
+      assert.equal(b.outcome === 'unreachable' && b.code, 'channel_error');
     }
-    assert.equal(r.api.sent.length, 0, 'nothing posted, so the sender can fall back to a chat ballot');
+    assert.equal(r.api.sent.length, 0);
   });
 
-  it('a card and a poll together, or a poll with one option, are refused', async () => {
+  it('the text the kernel made of a card is posted as it is, and its Telegram message_id is the question a reply points at', async () => {
     const r = await rig();
-    const both = await r.conversation.sendToConversation(String(GROUP), {
-      text: 'x', card: choiceCard, poll: { pollId: 'p', question: 'q', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
-    });
-    assert.equal(both.outcome, 'unreachable');
-    const one = await r.conversation.sendToConversation(String(GROUP), { text: 'x', poll: { pollId: 'p', question: 'q', options: [{ id: 'a', label: 'A' }] } });
-    assert.equal(one.outcome, 'unreachable');
-    assert.equal(r.api.sent.length, 0);
+    const out = await r.conversation.sendToConversation(String(GROUP), { text: 'Budget\n\n1) Klein\n2) Groß' });
+    assert.deepEqual(out, { outcome: 'delivered', messageId: '1', conversationId: String(GROUP) });
+    assert.equal(r.api.sent[0]?.params['reply_markup'], undefined, 'no buttons');
+    assert.match(texts(r)[0] ?? '', /1\) Klein/);
   });
 });
 

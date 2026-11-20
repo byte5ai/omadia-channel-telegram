@@ -1,8 +1,11 @@
 /**
  * Inbound message events for native facilitators (byte5ai/omadia#2043, spec
  * 2042 criterion 30): in a conversation an agent moderates, the kernel needs
- * what people write, with the author as Telegram states it, and the answers to
- * the questions the bot posted as text.
+ * what people write, with the author as Telegram states it. The kernel also
+ * matches a typed answer to a question it posted as text by these events, so
+ * each carries `replyToMessageId` (the Telegram `message_id` of the message
+ * replied to) and `addressedToBot` (a mention, a command, a reply to the bot,
+ * or a private chat).
  *
  * HOW MUCH the kernel is handed is its answer per bot and conversation
  * (`conversationDelivery`): `all` (every human message; the engine drives the
@@ -19,7 +22,6 @@
  * asked for it, and never tells a bot about a deletion), reactions.
  */
 
-import type { CardAnswerValue } from '@omadia/plugin-api';
 import type { ConversationMessageEvent } from '@omadia/channel-sdk';
 
 import type { TelegramMessage, TelegramUser } from './telegramBot.js';
@@ -35,15 +37,6 @@ export interface TelegramConversationMessageSink {
   isAllMessagesSubscribed(conversationId: string, channelKey: string): boolean;
   conversationDelivery?(conversationId: string, channelKey: string): TelegramDeliveryMode;
   emit(event: ConversationMessageEvent): void;
-}
-
-/** What a card answer carries besides the typed values. */
-export interface TelegramCardAnswer {
-  readonly cardId: string;
-  readonly kind: 'card' | 'poll';
-  readonly answers: readonly CardAnswerValue[];
-  readonly proposalId?: string;
-  readonly proposalVersion?: number;
 }
 
 /**
@@ -88,12 +81,17 @@ export class TelegramConversationMessages {
   }
 
   /**
-   * A human message. In `addressed` mode only when `isAddressed`. Returns
-   * whether an event went out.
+   * A human message. In `addressed` mode only when `isAddressed`. `said` is
+   * the text without the bot's own mention. Returns whether an event went out.
    */
-  emitCreated(message: TelegramMessage, mode: TelegramDeliveryMode, isAddressed: boolean): boolean {
+  emitCreated(
+    message: TelegramMessage,
+    mode: TelegramDeliveryMode,
+    isAddressed: boolean,
+    said?: string,
+  ): boolean {
     if (mode === 'none' || (mode === 'addressed' && !isAddressed)) return false;
-    const text = (message.text ?? message.caption ?? '').trim();
+    const text = (said ?? message.text ?? message.caption ?? '').trim();
     if (text.length === 0) return false;
     return this.emit(message, {
       kind: 'created',
@@ -103,56 +101,26 @@ export class TelegramConversationMessages {
     });
   }
 
-  /** One accepted answer to a question the bot posted as text. */
-  emitCardAnswer(message: TelegramMessage, answer: TelegramCardAnswer): boolean {
-    const first = answer.answers[0];
-    const value =
-      answer.kind === 'poll' && first?.kind === 'single_choice'
-        ? { optionId: first.optionId }
-        : { answers: answer.answers };
-    return this.emit(message, {
-      kind: 'card_answer',
-      // the message the card answers, per the contract
-      messageIdOverride: String(message.reply_to_message?.message_id ?? message.message_id),
-      cardAnswer: {
-        cardId: answer.cardId,
-        value,
-        // Telegram states who wrote the reply
-        answererVerified: true,
-        ...(answer.kind === 'card'
-          ? {
-              answers: answer.answers,
-              ...(answer.proposalId !== undefined ? { proposalId: answer.proposalId } : {}),
-              ...(answer.proposalVersion !== undefined ? { proposalVersion: answer.proposalVersion } : {}),
-            }
-          : {}),
-      },
-    });
-  }
-
   private emit(
     message: TelegramMessage,
     part: Pick<ConversationMessageEvent, 'kind'> &
-      Partial<Pick<ConversationMessageEvent, 'text' | 'replyToMessageId' | 'cardAnswer' | 'addressedToBot'>> & {
-        messageIdOverride?: string;
-      },
+      Partial<Pick<ConversationMessageEvent, 'text' | 'replyToMessageId' | 'addressedToBot'>>,
   ): boolean {
     try {
       const botKey = telegramBotKey(this.botUsername);
       const author = telegramAuthor(message.from);
       if (!botKey || !author) return false;
-      const { messageIdOverride, ...rest } = part;
       this.sink.emit({
         channelId: CHANNEL_ID_PLACEHOLDER,
         channelType: TELEGRAM_EVENT_CHANNEL_TYPE,
         conversationId: String(message.chat.id),
         conversationType: message.chat.type === 'private' ? 'direct' : 'group',
         receivedByChannelKey: botKey,
-        messageId: messageIdOverride ?? String(message.message_id),
+        messageId: String(message.message_id),
         revision: 0,
         author,
         occurredAt: new Date(message.date * 1000).toISOString(),
-        ...rest,
+        ...part,
       });
       return true;
     } catch (err) {

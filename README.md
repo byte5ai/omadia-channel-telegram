@@ -29,7 +29,7 @@ relationship to other integrations.
 | Roster | Verified group audience (`telegramRoster.ts`) and the kernel-facing `ConversationRosterProvider` with an honest status (`conversationRoster.ts`) |
 | Agent choice | Native `/agent` and `/agents` commands (`botCommands.ts`); the channel passes the text on, the resolver's agent carries them out (`agentResolution.ts`) |
 | Pace | Typing indicator, one acknowledgement for long work under the agent's name (SDK `runPacedTurn`) |
-| Agent posts | Conversation and targeted send providers (`telegramSend.ts`); polls and cards as numbered text, answers by reply (`openCards.ts`, `conversationMessages.ts`) |
+| Agent posts | Conversation and targeted send providers (`telegramSend.ts`); the kernel posts polls and cards as text and matches typed answers, the plugin supplies message ids and `created` events (`conversationMessages.ts`) |
 | Pairing | Token-based account pairing (`pairingStore.ts`, `pairingTokens.ts`) |
 | DM policy | `dmPolicyGuard.ts` |
 | Admin UI | `adminRouter.ts` + static assets under `ui/`, copied into `dist/` at build time |
@@ -129,20 +129,22 @@ Plain text, like a colleague's message.
 
 ### Polls, questions and facilitation in plain text
 
-Everything an agent can do with a card works as text. The plugin registers a
-conversation send and a targeted send (DM) provider with the kernel:
+Everything an agent can do with a card works as text, and the **kernel** does
+it: a poll or card that a channel does not show natively is posted by the
+kernel as a numbered list, kept as an open question, and a typed reply (a
+Telegram reply to that message, or a message that addresses the bot when it is
+the only open question) becomes the same typed answer a card would carry. This
+plugin has no card code. What it provides for that:
 
-- A poll or a one-question card is posted as a numbered list plus "Antworte
-  direkt auf diese Nachricht." Reply with the number or the label (several
-  numbers for multiple choice and rankings, `ja` / `einwand: Grund` for
-  consent, a number or `YYYY-MM-DD`). The reply reaches the kernel as the same
-  typed answer a card would carry. In a group only a **reply to that message**
-  counts (it also reaches the bot with privacy mode on); in a private chat the
-  next message does when it parses. Open questions survive a restart.
-- Only kinds a typed reply answers unambiguously are declared (single and
-  multiple choice, ranking, consent, number, date), one question per card. The
-  kernel falls back to a chat ballot for the rest. A posted question cannot be
-  updated into a result card.
+- A conversation send and a targeted send (DM) provider that declare **only**
+  `asChannelKey`: no `poll`, no `card` (so the kernel posts them as text, and a
+  poll or card in a DM is refused as before), no mentions. The `messageId` a
+  send reports is the Telegram `message_id`; a reply points at it.
+- `created` events for a conversation the kernel subscribed an agent to, with
+  `replyToMessageId` (the `message_id` replied to) and `addressedToBot` (a
+  mention, a command, a reply to the bot, or a private chat). The bot's own
+  mention is cut from the text. In a group a reply to the bot's message is
+  addressed even with privacy mode on.
 - In a conversation the kernel subscribed an agent to, what people write is
   recorded with the author Telegram states (`all` mode: no turn is started;
   `addressed` mode: what addresses the bot). Edits and deletions are not

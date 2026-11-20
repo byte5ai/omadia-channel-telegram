@@ -4,18 +4,19 @@
  * and a targeted send (a DM to one person).
  *
  * The kernel takes no provider's word for granted: it sends as a named
- * identity, as a poll or as a card only to a provider that DECLARES it
- * (`supports`). What is declared here is what is done:
+ * identity only to a provider that DECLARES it (`supports`). What is declared
+ * here is what is done:
  *
  *  - `asChannelKey`: the provider posts as exactly the bot it runs, whose key
  *    is `@<bot_username>` (the SDK's Telegram key), or returns `unreachable`.
  *    It never posts as another identity. A Telegram installation is ONE bot,
  *    so only an agent whose identity IS this bot can post through it.
- *  - `card` / `poll`: Telegram renders neither, so both go out as numbered text
- *    (`renderCardAsText`) and come back as the typed answer a card would have
- *    carried (`parseCardReply`, see `TelegramBot.handleCardReply`). One question per
- *    card, and only kinds a typed reply can answer without ambiguity. No
- *    `update`: a posted text cannot be turned into a result card.
+ *  - no `poll`, no `card`: Telegram shows neither. The KERNEL then posts the
+ *    question itself as numbered text (`renderCardAsText`), keeps it open and
+ *    turns a typed reply into the typed `card_answer` event. This plugin has no
+ *    card code. For that the plugin reports the Telegram `message_id` of the
+ *    posted message as `messageId` (the question a reply points at) and, in
+ *    its `created` events, `replyToMessageId` and `addressedToBot`.
  *  - no `mentions` (the kernel then leaves the text plain), no `aiLabel`
  *    (the kernel puts the disclosure line into the text itself).
  *
@@ -30,52 +31,21 @@ import type {
   TargetedMessage,
   TargetedSendProvider,
 } from '@omadia/channel-sdk';
-import { renderCardAsText } from '@omadia/channel-sdk';
-import type { CardQuestion, CardQuestionKind, QuestionCard } from '@omadia/plugin-api';
 
-import { DEFAULT_OPEN_MS, type OpenCardStore } from './openCards.js';
 import { isOwnBotKey } from './conversationMessages.js';
 import type { PairingStore } from './pairingStore.js';
 import type { TelegramEmitter } from './telegramEmitter.js';
 
 export const TELEGRAM_SEND_CHANNEL_TYPE = 'telegram';
 
-/** Kinds a typed reply answers unambiguously. `text` would swallow every message, `assignment` needs a member list. */
-export const TELEGRAM_CARD_KINDS: readonly CardQuestionKind[] = Object.freeze([
-  'single_choice',
-  'multiple_choice',
-  'ranking',
-  'consent',
-  'number',
-  'date',
-]);
-
-/**
- * What the providers declare. Polls and cards need the inbound side that turns
- * a typed reply into a `card_answer` event; a kernel without it gets plain
- * text posts only, and the kernel falls back to a chat ballot.
- */
-export function telegramSendCapabilities(canCollectAnswers: boolean): SendProviderCapabilities {
-  return Object.freeze({
-    asChannelKey: true,
-    ...(canCollectAnswers
-      ? { poll: true, card: Object.freeze({ kinds: TELEGRAM_CARD_KINDS, maxQuestions: 1, update: false }) }
-      : {}),
-  });
-}
-
-/** How a person is told to answer; appended to every posted question. */
-export const ANSWER_HINT = 'Antworte direkt auf diese Nachricht.';
+/** What the providers declare: the own identity, nothing else. */
+export const TELEGRAM_SEND_CAPABILITIES: SendProviderCapabilities = Object.freeze({ asChannelKey: true });
 
 export interface TelegramSendDeps {
   readonly emitter: Pick<TelegramEmitter, 'sendPosted'>;
-  readonly openCards: Pick<OpenCardStore, 'add'>;
   readonly pairingStore: PairingStore;
   readonly dmPolicy: DmPolicy;
   readonly botUsername: string;
-  /** The inbound side that collects typed answers is wired (`conversationMessages`). */
-  readonly canCollectAnswers: boolean;
-  readonly now?: () => number;
 }
 
 type Unreachable = Extract<TargetedDeliveryOutcome, { outcome: 'unreachable' }>;
@@ -96,23 +66,6 @@ export function parseChatId(raw: string): number | undefined {
 export function chatIdOfPrincipal(principalId: string): number | undefined {
   const match = /^user:telegram-chat:(-?\d+)$/i.exec(principalId.trim());
   return match?.[1] ? Number(match[1]) : undefined;
-}
-
-/** The card a poll is posted as: one single-choice question. */
-export function pollAsCard(poll: NonNullable<TargetedMessage['poll']>): QuestionCard {
-  return {
-    cardId: poll.pollId,
-    title: poll.question,
-    ...(poll.hint ? { intro: poll.hint } : {}),
-    questions: [{ id: 'poll', kind: 'single_choice', label: 'Wähle eine Option:', options: poll.options }],
-  };
-}
-
-function cardProblem(card: QuestionCard): string | undefined {
-  if (card.questions.length !== 1) return `Telegram posts one question per card, this one has ${String(card.questions.length)}`;
-  const question = card.questions[0] as CardQuestion;
-  if (!TELEGRAM_CARD_KINDS.includes(question.kind)) return `Telegram answers no '${question.kind}' question by typed reply`;
-  return undefined;
 }
 
 /** Why a Bot API failure means the person or chat cannot be reached, as the SDK's code. */
@@ -155,44 +108,20 @@ class TelegramPoster {
   }
 
   async post(chatId: number, message: TargetedMessage, isDirect: boolean): Promise<TargetedDeliveryOutcome> {
-    if (message.poll && message.card) return unreachable('channel_error', 'a message is a poll or a question card, not both');
-    const poll = message.poll;
-    if (poll && (poll.options.length < 2 || poll.options.length > 6)) {
-      return unreachable('channel_error', 'a poll has 2 to 6 options');
+    // The kernel turns a card or poll into text before it gets here, because
+    // none is declared. One that arrives anyway is refused, not half posted.
+    if (message.poll || message.card) {
+      return unreachable('channel_error', 'the Telegram channel declares no poll and no card — nothing was posted');
     }
-    const card = message.card ?? (poll ? pollAsCard(poll) : undefined);
-    if (card && !this.deps.canCollectAnswers) {
-      return unreachable('channel_error', 'this kernel gives the Telegram channel no way to collect answers — nothing was posted');
-    }
-    const problem = card ? cardProblem(card) : undefined;
-    if (problem) return unreachable('channel_error', `${problem} — nothing was posted`);
-
-    const text = card
-      ? [message.text.trim(), renderCardAsText(card), ANSWER_HINT].filter(Boolean).join('\n\n')
-      : message.text;
     try {
       const messageId = await this.deps.emitter.sendPosted(chatId, {
-        text,
+        text: message.text,
         ...(message.attachments ? { attachments: message.attachments } : {}),
       });
-      if (card && messageId !== undefined) {
-        const now = (this.deps.now ?? Date.now)();
-        await this.deps.openCards.add({
-          cardId: card.cardId,
-          kind: poll ? 'poll' : 'card',
-          chatId,
-          messageId,
-          question: card.questions[0] as CardQuestion,
-          ...(card.proposalId !== undefined ? { proposalId: card.proposalId } : {}),
-          ...(card.proposalVersion !== undefined ? { proposalVersion: card.proposalVersion } : {}),
-          closesAt: card.closesAt ?? new Date(now + DEFAULT_OPEN_MS).toISOString(),
-          changeable: card.changeable !== false,
-        });
-      }
       return {
         outcome: 'delivered',
+        // the Telegram message_id: what a reply to the message points at
         ...(messageId !== undefined ? { messageId: String(messageId) } : {}),
-        ...(card && messageId !== undefined ? { cardMessageId: String(messageId) } : {}),
         conversationId: String(chatId),
       };
     } catch (err) {
@@ -206,7 +135,7 @@ export function createTelegramConversationSend(deps: TelegramSendDeps): Conversa
   const poster = new TelegramPoster(deps);
   return {
     channelType: TELEGRAM_SEND_CHANNEL_TYPE,
-    supports: telegramSendCapabilities(deps.canCollectAnswers),
+    supports: TELEGRAM_SEND_CAPABILITIES,
     async sendToConversation(conversationId, message, opts) {
       const refusal = poster.identityRefusal(opts?.asChannelKey);
       if (refusal) return refusal;
@@ -224,7 +153,7 @@ export function createTelegramTargetedSend(deps: TelegramSendDeps): TargetedSend
   const poster = new TelegramPoster(deps);
   return {
     channelType: TELEGRAM_SEND_CHANNEL_TYPE,
-    supports: telegramSendCapabilities(deps.canCollectAnswers),
+    supports: TELEGRAM_SEND_CAPABILITIES,
     async sendToUser(target, message, opts) {
       const refusal = poster.identityRefusal(opts?.asChannelKey);
       if (refusal) return refusal;

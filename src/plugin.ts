@@ -46,7 +46,6 @@ import { TelegramConversationRosterProvider } from './conversationRoster.js';
 import { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 import type { ChannelRouteLookup } from './agentResolution.js';
 import { TelegramConversationMessages } from './conversationMessages.js';
-import { OpenCardStore } from './openCards.js';
 import { createTelegramConversationSend, createTelegramTargetedSend } from './telegramSend.js';
 import { TelegramEmitter } from './telegramEmitter.js';
 import {
@@ -200,8 +199,7 @@ export async function activate(
 
   // --- Posting for agents and collecting answers (spec 2042 criterion 30) ---
   // Optional kernel seams, feature-detected: older kernels keep activating.
-  // Inbound events need both the emitter and the subscription lookup; without
-  // them the send providers declare no poll and no card.
+  // Inbound events need both the emitter and the subscription lookup.
   const botUsername = me.username ?? '';
   const emitConversationMessage = core.emitConversationMessage?.bind(core);
   const isAllMessagesSubscribed = core.isAllMessagesSubscribed?.bind(core);
@@ -225,13 +223,11 @@ export async function activate(
           botUsername,
         )
       : undefined;
-  const openCards = new OpenCardStore(memoryStore);
 
   const bot = new TelegramBot({
     api,
     chatAgent,
     channelResolver: channelRoute,
-    openCards,
     ...(conversationMessages ? { conversationMessages } : {}),
     history: conversationHistoryStore,
     turnContext,
@@ -252,17 +248,15 @@ export async function activate(
   if (core.registerConversationSendProvider || core.registerTargetedSendProvider) {
     const sendDeps = {
       emitter: new TelegramEmitter({ api, speakerHistory }),
-      openCards,
       pairingStore,
       dmPolicy,
       botUsername,
-      canCollectAnswers: conversationMessages !== undefined,
     };
     core.registerConversationSendProvider?.(ctx.agentId, createTelegramConversationSend(sendDeps));
     core.registerTargetedSendProvider?.(ctx.agentId, createTelegramTargetedSend(sendDeps));
     core.log(
       'info',
-      `telegram send providers registered (own-identity posts as @${botUsername || '<unknown>'}, polls and cards ${conversationMessages ? 'as numbered text with typed answers' : 'not offered: kernel lacks the inbound events'})`,
+      `telegram send providers registered (own-identity posts as @${botUsername || '<unknown>'}; polls and cards are posted as text by the kernel)`,
     );
   } else {
     core.log('info', 'kernel has no send providers — agents cannot post through Telegram');

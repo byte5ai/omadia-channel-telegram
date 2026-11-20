@@ -39,7 +39,6 @@ export { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
 export { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 export { BOT_COMMANDS, registerBotCommands } from './botCommands.js';
 export { resolveAgentForTurn, type AgentResolution, type ChannelRouteLookup } from './agentResolution.js';
-export { OpenCardStore, type OpenCard } from './openCards.js';
 export {
   TelegramConversationMessages,
   isOwnBotKey,
@@ -47,13 +46,10 @@ export {
   type TelegramConversationMessageSink,
 } from './conversationMessages.js';
 export {
-  ANSWER_HINT,
-  TELEGRAM_CARD_KINDS,
+  TELEGRAM_SEND_CAPABILITIES,
   classifyPostError,
   createTelegramConversationSend,
   createTelegramTargetedSend,
-  pollAsCard,
-  telegramSendCapabilities,
   type TelegramSendDeps,
 } from './telegramSend.js';
 export {

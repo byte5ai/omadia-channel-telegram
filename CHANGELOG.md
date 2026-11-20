@@ -67,11 +67,13 @@ before that kernel runs.
 - Fixed: the "not paired" refusal showed MarkdownV2 backslashes.
 - **Agents post through Telegram** (criterion 30): conversation and targeted
   send providers, declared honestly (`asChannelKey` only for this bot's own
-  key `@<bot_username>`; polls and one-question cards as numbered text, answered
-  by a reply and delivered as typed `card_answer` events; no mentions, no card
-  update). Facilitation contributions are recorded as `created` events per the
-  kernel's delivery mode (`all` / `addressed` / `none`). Polls and cards are
-  declared only when the kernel offers the inbound seams. See README.
+  key `@<bot_username>`; no `poll`, no `card`, no mentions). The kernel posts a
+  poll or card as numbered text itself, keeps the question open and turns a
+  typed reply into the `card_answer` (kernel `typedCardReplies`); this plugin has
+  no card code. It reports the Telegram `message_id` of every send and records
+  what people write as `created` events (delivery mode `all` / `addressed` /
+  `none`) with `replyToMessageId` and `addressedToBot`, the bot's own mention
+  cut from the text. See README.
 - **compat.core** `>=1.74.0 <2.0` (placeholder; the parent session sets the
   final range with the release).
 - Own identity per agent (one bot token per agent) is **not** supported; the
@@ -79,7 +81,7 @@ before that kernel runs.
 - Tests: emitter paths (criterion 5), plain text, parity and decorations
   (29, 30, 31), roster, command menu, pace, routing (reject notice, speaker
   ack, principal form, `/agent` pass-through, group addressing), send providers,
-  polls and facilitation through plain text (criterion 30).
+  `created` events for facilitation (the typed card answer is tested in the kernel).
 
 ## 0.3.0
 
