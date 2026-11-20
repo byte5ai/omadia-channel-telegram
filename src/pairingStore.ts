@@ -28,6 +28,7 @@ import type { MemoryStoreShim } from './kernel-types.js';
 // the channel-telegram plugin, never to /memories at the user level.
 const DM_DIR = '/memories/pairings/dm';
 const GROUP_DIR = '/memories/pairings/groups';
+const AGENT_BOT_DIR = '/memories/pairings/agent-bots';
 
 // ---------------------------------------------------------------------------
 // Schemas — JSON-on-disk shapes. Stable across plugin versions: any new
@@ -68,8 +69,27 @@ export interface GroupActivation {
 // Store
 // ---------------------------------------------------------------------------
 
+/**
+ * Spec 2042 §5.3 — an agent's own bot keeps its OWN group activations: it
+ * speaks only in groups a paired person added THAT bot to. The DM bindings
+ * (which Telegram user is which harness identity) are a fact about the
+ * person and are shared by every bot of the installation.
+ */
+export interface PairingStoreOptions {
+  /** The agent bot's Telegram id; absent for the installation's own bot. */
+  readonly agentBotId?: number;
+}
+
 export class PairingStore {
-  constructor(private readonly memory: MemoryStoreShim) {}
+  private readonly groupDir: string;
+
+  constructor(
+    private readonly memory: MemoryStoreShim,
+    options: PairingStoreOptions = {},
+  ) {
+    this.groupDir =
+      options.agentBotId === undefined ? GROUP_DIR : `${AGENT_BOT_DIR}/${String(options.agentBotId)}/groups`;
+  }
 
   // ---------- DM bindings -------------------------------------------------
 
@@ -120,13 +140,13 @@ export class PairingStore {
   async getGroupActivation(
     chatId: number,
   ): Promise<GroupActivation | undefined> {
-    const p = groupPath(chatId);
+    const p = groupPath(this.groupDir, chatId);
     if (!(await this.memory.fileExists(p))) return undefined;
     return parseJson<GroupActivation>(await this.memory.readFile(p));
   }
 
   async putGroupActivation(activation: GroupActivation): Promise<void> {
-    const p = groupPath(activation.chatId);
+    const p = groupPath(this.groupDir, activation.chatId);
     const body = JSON.stringify(activation, null, 2);
     if (await this.memory.fileExists(p)) {
       await this.memory.writeFile(p, body);
@@ -136,13 +156,13 @@ export class PairingStore {
   }
 
   async deleteGroupActivation(chatId: number): Promise<void> {
-    const p = groupPath(chatId);
+    const p = groupPath(this.groupDir, chatId);
     if (await this.memory.fileExists(p)) await this.memory.delete(p);
   }
 
   async listGroupActivations(): Promise<GroupActivation[]> {
-    if (!(await this.memory.directoryExists(GROUP_DIR))) return [];
-    const entries = await this.memory.list(GROUP_DIR);
+    if (!(await this.memory.directoryExists(this.groupDir))) return [];
+    const entries = await this.memory.list(this.groupDir);
     const out: GroupActivation[] = [];
     for (const e of entries) {
       if (e.isDirectory) continue;
@@ -171,12 +191,12 @@ function dmPath(telegramUserId: number): string {
   return `${DM_DIR}/${String(telegramUserId)}.json`;
 }
 
-function groupPath(chatId: number): string {
+function groupPath(dir: string, chatId: number): string {
   // Replace leading minus with `n` (negative) — `-` is rejected by the
   // memoryStore path validator (path-traversal hardening) so we can't
   // store negative chat IDs verbatim.
   const safe = chatId < 0 ? `n${String(-chatId)}` : String(chatId);
-  return `${GROUP_DIR}/${safe}.json`;
+  return `${dir}/${safe}.json`;
 }
 
 function parseJson<T>(body: string): T {

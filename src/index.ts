@@ -50,17 +50,37 @@ export {
   classifyPostError,
   createTelegramConversationSend,
   createTelegramTargetedSend,
+  type TelegramBotLookup,
   type TelegramSendDeps,
 } from './telegramSend.js';
+export {
+  TELEGRAM_ROUTINE_CHANNEL,
+  createTelegramProactiveSend,
+  createTelegramRoutineTurn,
+  parseDeliveryRef,
+  type TelegramDeliveryRef,
+  type TelegramRoutineTurn,
+} from './telegramRoutines.js';
 export {
   TelegramConversationRosterProvider,
   type TelegramConversationRosterDeps,
 } from './conversationRoster.js';
 
 export {
+  createTelegramAgentBotsRouter,
   createTelegramWebhookRouter,
   type TelegramRouterDeps,
 } from './messagesRouter.js';
+export {
+  AGENT_BOT_FIELDS,
+  AGENT_BOT_TOKEN_PREFIX,
+  TelegramBotFleet,
+  createTelegramAgentIdentityProvider,
+  startStoredAgentBots,
+  type AgentBotDeps,
+  type AgentBotSecrets,
+} from './agentBots.js';
+export { agentBotWebhookSecret, type TelegramBotRuntime } from './botRuntime.js';
 
 export {
   MAX_VERIFIED_MEMBERS,

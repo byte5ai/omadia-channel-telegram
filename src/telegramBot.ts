@@ -52,8 +52,9 @@ import {
   type EmissionRecord,
   type SpeakerHistoryReader,
 } from './telegramEmitter.js';
+import type { TelegramRoutineTurn } from './telegramRoutines.js';
 import { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
-import type { TelegramConversationMessages } from './conversationMessages.js';
+import { telegramBotKey, type TelegramConversationMessages } from './conversationMessages.js';
 
 // ---------------------------------------------------------------------------
 // Bot API envelope — narrow shapes for the fields we read
@@ -514,6 +515,19 @@ export interface TelegramBotOptions {
    * host WITHOUT a resolver (the lookup returns `undefined`) uses `chatAgent`.
    */
   channelResolver?: ChannelRouteLookup;
+  /**
+   * Spec 2042 §5.3 — this bot is one agent's own bot. Every turn is resolved
+   * on the bot key `tg:<botId>` alone, and only an EXCLUSIVE answer (the key
+   * IS that agent's identity) may answer: a bot named after one agent never
+   * answers as another, so a key the kernel does not know is refused.
+   */
+  agentBot?: boolean;
+  /**
+   * Spec 2042 §5.12 — opens the kernel's routines scope for a person's turn,
+   * so the agent may set triggers and routines that deliver back here (through
+   * this bot). Absent = the kernel publishes no routines (no database).
+   */
+  routineTurn?: TelegramRoutineTurn;
 }
 
 /** Telegram keeps the "typing…" state for about 5 s, so renew it every 4 s. No reply window. */
@@ -524,6 +538,9 @@ export const TELEGRAM_PACE_PROFILE: ChannelPaceProfile = Object.freeze({
 
 /** The notice for a turn nobody answers when the kernel gave no notice of its own. */
 const NO_AGENT_TEXT = 'Für diese Unterhaltung ist kein Agent eingerichtet.';
+
+/** An agent's own bot the kernel does not know (any more) as that agent's identity. */
+const UNOWNED_BOT_TEXT = 'Dieser Bot ist gerade keinem Agenten zugeordnet und antwortet deshalb nicht.';
 
 /** The notice when the resolver failed: no agent is guessed, the turn is not answered. */
 const ROUTING_UNAVAILABLE_TEXT =
@@ -568,6 +585,8 @@ export class TelegramBot {
   private readonly botIdentity: { id: number; username: string };
   private readonly channelResolver?: ChannelRouteLookup;
   private readonly conversationMessages?: TelegramConversationMessages;
+  private readonly agentBot: boolean;
+  private readonly routineTurn: TelegramRoutineTurn | undefined;
   constructor(opts: TelegramBotOptions) {
     this.api = opts.api;
     this.chatAgent = opts.chatAgent;
@@ -580,7 +599,10 @@ export class TelegramBot {
       api: this.api,
       speakerHistory: opts.speakerHistory ?? new InMemorySpeakerHistoryStore(),
       ...(opts.onEmit ? { onEmit: opts.onEmit } : {}),
+      ...(opts.agentBot ? { nativeIdentity: true } : {}),
     });
+    this.agentBot = opts.agentBot === true;
+    this.routineTurn = opts.routineTurn;
     this.pendingReplies = new PendingReplyStore(opts.pendingReplyTtlMs);
     this.paceProfile = opts.paceProfile ?? TELEGRAM_PACE_PROFILE;
     this.paceClock = opts.paceClock;
@@ -590,6 +612,18 @@ export class TelegramBot {
     this.botIdentity = opts.botIdentity;
     if (opts.channelResolver) this.channelResolver = opts.channelResolver;
     if (opts.conversationMessages) this.conversationMessages = opts.conversationMessages;
+  }
+
+  /**
+   * The keys a turn is resolved on, narrowest first. The installation's own
+   * bot: the chat, then its `@username` and bare username (operator bindings).
+   * An agent's own bot: its bot key only — that bot answers as its agent or
+   * not at all.
+   */
+  routingKeys(chatId: number): Array<string | undefined> {
+    if (this.agentBot) return [telegramBotKey(this.botIdentity.id)];
+    const { username } = this.botIdentity;
+    return [String(chatId), username ? `@${username}` : undefined, username || undefined];
   }
 
   /** Single entry-point — dispatches on update.message / callback_query / my_chat_member. */
@@ -1258,7 +1292,7 @@ export class TelegramBot {
     const locale = localeOf(input.from);
     const resolution = resolveAgentForTurn(
       this.channelResolver,
-      [String(input.chat.id), this.botIdentity.username ? `@${this.botIdentity.username}` : undefined, this.botIdentity.username || undefined],
+      this.routingKeys(input.chat.id),
       this.chatAgent,
       {
         locale,
@@ -1270,6 +1304,13 @@ export class TelegramBot {
           err,
         ),
     );
+    if (this.agentBot && resolution.kind !== 'unavailable' && resolution.exclusive !== true) {
+      // The kernel does not know this bot as an agent's identity (removed, or
+      // not registered yet): its name belongs to an agent, so nobody else answers.
+      console.warn(`[telegram] agent bot ${telegramBotKey(this.botIdentity.id)} is no agent's identity — turn refused`);
+      await this.emitter.sendSystem(input.chat.id, UNOWNED_BOT_TEXT);
+      return;
+    }
     if (resolution.kind === 'unavailable') {
       await this.emitter.sendSystem(input.chat.id, ROUTING_UNAVAILABLE_TEXT);
       return;
@@ -1300,9 +1341,13 @@ export class TelegramBot {
         // acknowledgement when the work clearly takes longer, no progress
         // chatter. Telegram has no reply window, so the answer is always an
         // ordinary message.
+        // The routines scope wraps the whole turn: who asks, and where a
+        // trigger or routine the agent sets now delivers later.
+        const inRoutineScope = <T,>(body: () => Promise<T>): Promise<T> =>
+          this.routineTurn && userId ? this.routineTurn({ userId, chatId: input.chat.id })(body) : body();
         const { result } = await runPacedTurn(
           () =>
-            chatAgent.chat({
+            inRoutineScope(() => chatAgent.chat({
               userMessage: input.userMessage,
               sessionScope,
               origin,
@@ -1319,7 +1364,7 @@ export class TelegramBot {
                 ? { attachments: input.attachments }
                 : {}),
               userTimeZone: 'Europe/Berlin',
-            }),
+            })),
           this.paceProfile,
           {
             sendTyping: async () => {

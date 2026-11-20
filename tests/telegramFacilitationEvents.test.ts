@@ -30,7 +30,7 @@ async function rig(report?: Report, reportTimeoutMs?: number) {
       emit: (e) => void events.push(e),
       ...(report ? { report: (e: ConversationMessageEvent) => (reported.push(e), report(e)) } : {}),
     },
-    BOT_USERNAME,
+    BOT_ID,
     reportTimeoutMs,
   );
   const h = harness({ conversationMessages } as Partial<TelegramBotOptions>);
@@ -100,7 +100,7 @@ describe('created events carry what the kernel matches a typed answer by', () =>
     assert.equal(event.messageId, String(update.message?.message_id));
     assert.equal(event.conversationId, String(GROUP));
     assert.equal(event.conversationType, 'group');
-    assert.equal(event.receivedByChannelKey, `@${BOT_USERNAME}`);
+    assert.equal(event.receivedByChannelKey, `tg:${String(BOT_ID)}`);
     assert.equal(event.revision, 0);
     assert.equal(event.occurredAt, '1970-01-01T00:00:00.000Z');
   });

@@ -23,43 +23,40 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import express, { Router } from 'express';
-import type { PluginContext, MemoryStore } from '@omadia/plugin-api';
+import type { PluginContext, MemoryStore, RoutinesIntegration } from '@omadia/plugin-api';
+import { createTelegramProactiveSend, ROUTINES_INTEGRATION_SERVICE, TELEGRAM_ROUTINE_CHANNEL } from './telegramRoutines.js';
 import {
   CHANNEL_RESOLVER_SERVICE,
   resolveChannelRoute,
-  InMemoryConversationHistoryStore,
   type ChannelHandle,
-  type ConversationMessageEvent,
   type CoreApi,
 } from '@omadia/channel-sdk';
 import type { ChatAgentBundle } from '@omadia/orchestrator';
 
 import type { TurnContextModule } from './kernel-types.js';
 import { createTelegramAdminRouter } from './adminRouter.js';
+import {
+  createTelegramAgentIdentityProvider,
+  startStoredAgentBots,
+  TelegramBotFleet,
+  type AgentBotDeps,
+} from './agentBots.js';
+import {
+  AGENT_BOTS_PATH,
+  createBotRuntime,
+  WEBHOOK_PATH_PREFIX,
+  type SharedBotDeps,
+} from './botRuntime.js';
 import { parseDmPolicy, type DmPolicy } from './dmPolicyGuard.js';
-import { createTelegramWebhookRouter } from './messagesRouter.js';
+import { createTelegramAgentBotsRouter, createTelegramWebhookRouter } from './messagesRouter.js';
 import { PairingStore } from './pairingStore.js';
 import { PairingTokenRegistry } from './pairingTokens.js';
-import { TelegramRosterProvider } from './telegramRoster.js';
 import { GroupMemberTracker } from './groupMemberTracker.js';
 import { registerBotCommands } from './botCommands.js';
-import { TelegramConversationRosterProvider } from './conversationRoster.js';
 import { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 import type { ChannelRouteLookup } from './agentResolution.js';
-import { TelegramConversationMessages } from './conversationMessages.js';
 import { createTelegramConversationSend, createTelegramTargetedSend } from './telegramSend.js';
-import { TelegramEmitter } from './telegramEmitter.js';
-import {
-  TELEGRAM_ALLOWED_UPDATES,
-  TELEGRAM_CHANNEL_TYPE,
-  TelegramApiClient,
-  TelegramBot,
-  type TelegramUpdate,
-} from './telegramBot.js';
-
-const WEBHOOK_PATH_PREFIX = '/api/telegram';
-const LONG_POLL_TIMEOUT_S = 25;
-const LONG_POLL_BACKOFF_MS = 5_000;
+import { TelegramApiClient } from './telegramBot.js';
 
 export async function activate(
   ctx: PluginContext,
@@ -93,12 +90,10 @@ export async function activate(
       "memoryStore service not published — @omadia/memory must be active before this channel (declare 'memoryStore@1' in requires).",
     );
   }
+  // Triggers and routines (spec 2042 §5.12): published by the kernel only
+  // with a database. Absent = agents cannot set triggers or routines here.
+  const routines = ctx.services.get<RoutinesIntegration>(ROUTINES_INTEGRATION_SERVICE);
   const krokiBaseUrl = process.env['KROKI_BASE_URL'];
-
-  // Per-channel in-memory history. Channel-prefixed scopes (`telegram:<id>`)
-  // make sharing safe in principle, but per-channel instances mean a
-  // history wipe on one channel never touches another's state.
-  const conversationHistoryStore = new InMemoryConversationHistoryStore();
 
   const botToken = await ctx.secrets.require('telegram_bot_token');
   // Webhook secret guards the webhook endpoint — Telegram echoes it in the
@@ -145,43 +140,13 @@ export async function activate(
     `Telegram bot identity: @${me.username ?? '<unknown>'} (id=${String(me.id)})`,
   );
 
-  // Group members the bot has seen, persisted next to the pairings; the
-  // roster verifies them before the kernel may treat them as the room.
+  // Shared by every bot of the installation (see botRuntime.ts): group
+  // members seen, DM bindings, pairing tokens, who spoke where.
   const memberTracker = new GroupMemberTracker(memoryStore);
-  const rosterProvider = new TelegramRosterProvider(api, memberTracker, me.id);
-  core.log('info', 'telegram roster provider ready (verified, ttl=10s)');
-
-  // Pairing infrastructure (S+7.6) — token registry is in-memory ephemeral
-  // (120s TTL, single-use), pairing store is backed by the memoryStore
-  // capability for persistent telegram_user_id → harness_identity bindings.
   const pairingTokens = new PairingTokenRegistry();
   const pairingStore = new PairingStore(memoryStore);
-  core.log('info', 'telegram pairing store ready (memoryStore-backed)');
-
-  // The room's membership for the kernel's audience floor (spec 2042 §5.11).
-  // Honest by construction: `complete` only when proven, `partial` when only
-  // administrators and seen members are known. Feature-detected: older
-  // kernels have no roster registry.
-  if (typeof core.registerRosterProvider === 'function') {
-    core.registerRosterProvider(
-      ctx.agentId,
-      new TelegramConversationRosterProvider({
-        roster: rosterProvider,
-        pairingStore,
-        bot: { id: me.id, username: me.username ?? '' },
-      }),
-    );
-    core.log('info', 'telegram conversation roster registered with the kernel');
-  } else {
-    core.log('info', 'kernel has no roster registry — conversation roster not registered');
-  }
-
-  // Native "/" menu: /agent, /agents. The agent behind the resolver carries
-  // them out; the channel passes the text on unchanged.
-  await registerBotCommands(api, (level, message) => core.log(level, message));
-
-  // Who spoke in which chat, persisted, drives the plain name line (INV-4).
   const speakerHistory = new PersistentSpeakerHistoryStore(memoryStore);
+  core.log('info', 'telegram pairing store ready (memoryStore-backed)');
 
   // --- Per-turn agent resolution (S1 contract) --------------------------
   // The SDK's `resolveChannelRoute` asks `channelResolver@1` on every turn:
@@ -198,128 +163,114 @@ export async function activate(
       : 'channelResolver@1 not published — Telegram routes all turns to the default chatAgent (host without registry)',
   );
 
-  // --- Posting for agents and collecting answers (spec 2042 criterion 30) ---
-  // Optional kernel seams, feature-detected: older kernels keep activating.
-  // Inbound events need both the emitter and the subscription lookup.
-  const botUsername = me.username ?? '';
-  const emitConversationMessage = core.emitConversationMessage?.bind(core);
-  const isAllMessagesSubscribed = core.isAllMessagesSubscribed?.bind(core);
-  const conversationDelivery = core.conversationDelivery?.bind(core);
-  // The kernel's verdict on a message the channel would start a turn for.
-  const reportConversationMessage = core.reportConversationMessage?.bind(core);
-  const conversationMessages =
-    emitConversationMessage && isAllMessagesSubscribed && botUsername
-      ? new TelegramConversationMessages(
-          {
-            isAllMessagesSubscribed: (conversationId, channelKey) =>
-              isAllMessagesSubscribed(TELEGRAM_CHANNEL_TYPE, conversationId, channelKey),
-            ...(conversationDelivery
-              ? {
-                  conversationDelivery: (conversationId: string, channelKey: string) =>
-                    conversationDelivery(TELEGRAM_CHANNEL_TYPE, conversationId, channelKey),
-                }
-              : {}),
-            // The catalog id is authoritative here; the adapter cannot know it.
-            emit: (event) =>
-              emitConversationMessage({ ...event, channelId: ctx.agentId, channelType: TELEGRAM_CHANNEL_TYPE }),
-            ...(reportConversationMessage
-              ? {
-                  report: (event: ConversationMessageEvent) =>
-                    reportConversationMessage({ ...event, channelId: ctx.agentId, channelType: TELEGRAM_CHANNEL_TYPE }),
-                }
-              : {}),
-          },
-          botUsername,
-        )
-      : undefined;
-
-  const bot = new TelegramBot({
-    api,
+  const shared: SharedBotDeps = {
+    core,
+    channelId: ctx.agentId,
     chatAgent,
-    channelResolver: channelRoute,
-    ...(conversationMessages ? { conversationMessages } : {}),
-    history: conversationHistoryStore,
     turnContext,
-    rosterProvider: (chatId) => rosterProvider.forChat(chatId),
-    memberTracker,
-    invalidateRoster: (chatId) => rosterProvider.invalidate(chatId),
+    memoryStore,
+    channelRoute,
+    dmPolicy,
     pairingStore,
     pairingTokens,
     speakerHistory,
-    dmPolicy,
-    // S+7.7+: identity drives the in-group mention/reply filter (so the
-    // bot only answers when explicitly addressed once privacy-mode is
-    // off). Requires bot username — when empty, fall back to id-only
-    // matching via text_mention entities + reply detection.
-    botIdentity: { id: me.id, username: me.username ?? '' },
-  });
+    memberTracker,
+    webhookSecret,
+    publicBaseUrl: publicBaseUrl || undefined,
+    ...(routines ? { routines } : {}),
+  };
+  const defaultBot = createBotRuntime(shared, api, me, { agentBot: false });
+  const fleet = new TelegramBotFleet(defaultBot);
+  const bot = defaultBot.bot;
 
+  // The room's membership for the kernel's audience floor (spec 2042 §5.11),
+  // as the bot `asChannelKey` sees it. Feature-detected: older kernels have
+  // no roster registry.
+  if (typeof core.registerRosterProvider === 'function') {
+    core.registerRosterProvider(ctx.agentId, fleet.rosterProvider());
+    core.log('info', 'telegram conversation roster registered with the kernel');
+  } else {
+    core.log('info', 'kernel has no roster registry — conversation roster not registered');
+  }
+
+  // Native "/" menu of the installation's own bot: /agent, /agents. The
+  // agent behind the resolver carries them out; the channel passes the text
+  // on unchanged. Agents' own bots get no menu: there is nothing to choose.
+  await registerBotCommands(api, (level, message) => core.log(level, message));
+
+  // --- Posting for agents and collecting answers (spec 2042 criterion 30) ---
+  // Every send names the bot it goes out as (`asChannelKey` = `tg:<botId>`):
+  // the installation's own bot or an agent's own bot, never a substitute.
   if (core.registerConversationSendProvider || core.registerTargetedSendProvider) {
-    const sendDeps = {
-      emitter: new TelegramEmitter({ api, speakerHistory }),
-      pairingStore,
-      dmPolicy,
-      botUsername,
-    };
-    core.registerConversationSendProvider?.(ctx.agentId, createTelegramConversationSend(sendDeps));
-    core.registerTargetedSendProvider?.(ctx.agentId, createTelegramTargetedSend(sendDeps));
+    const lookup = (asChannelKey: string | undefined) => fleet.sendDepsFor(asChannelKey);
+    core.registerConversationSendProvider?.(ctx.agentId, createTelegramConversationSend(lookup));
+    core.registerTargetedSendProvider?.(ctx.agentId, createTelegramTargetedSend(lookup));
     core.log(
       'info',
-      `telegram send providers registered (own-identity posts as @${botUsername || '<unknown>'}; polls and cards are posted as text by the kernel)`,
+      `telegram send providers registered (posts as ${defaultBot.botKey} or an agent's own bot; polls and cards are posted as text by the kernel)`,
     );
   } else {
     core.log('info', 'kernel has no send providers — agents cannot post through Telegram');
   }
 
-  // Mount the webhook router unconditionally — even when running in LP
-  // mode, a future operator update can flip TELEGRAM_PUBLIC_BASE_URL +
-  // re-activate without restart.
+
+  // Webhooks: agents' own bots under /api/telegram/agent-bots/<botId>/webhook
+  // (registered first, the more specific prefix), the installation's own bot
+  // under /api/telegram/webhook. Mounted even in long-poll mode, so a later
+  // public base URL needs no restart.
+  core.registerRouter(
+    ctx.agentId,
+    `${WEBHOOK_PATH_PREFIX}${AGENT_BOTS_PATH}`,
+    createTelegramAgentBotsRouter((botId) => {
+      const runtime = fleet.agentBotById(botId);
+      return runtime ? { bot: runtime.bot, webhookSecret: runtime.webhookSecret } : undefined;
+    }),
+  );
   const router = createTelegramWebhookRouter({ bot, webhookSecret });
   core.registerRouter(ctx.agentId, WEBHOOK_PATH_PREFIX, router);
-  core.log(
-    'info',
-    `Telegram webhook router mounted at ${WEBHOOK_PATH_PREFIX}/webhook`,
-  );
+  core.log('info', `Telegram webhook router mounted at ${WEBHOOK_PATH_PREFIX}/webhook`);
+  await defaultBot.start();
 
-  // Webhook vs. long-polling decision
-  let lpHandle: { stop(): void } | undefined;
-  if (publicBaseUrl) {
-    const webhookUrl = joinUrl(publicBaseUrl, `${WEBHOOK_PATH_PREFIX}/webhook`);
-    try {
-      await api.setWebhook({
-        url: webhookUrl,
-        secret_token: webhookSecret,
-        allowed_updates: TELEGRAM_ALLOWED_UPDATES,
-        drop_pending_updates: false,
-      });
-      core.log(
-        'info',
-        `Telegram webhook registered: ${webhookUrl} (allowed=message,callback_query)`,
-      );
-    } catch (err) {
-      core.log(
-        'error',
-        `setWebhook failed: ${err instanceof Error ? err.message : String(err)} — falling back to long-polling`,
-      );
-      lpHandle = startLongPolling(api, bot, core);
-    }
-  } else {
-    core.log(
-      'info',
-      'telegram_public_base_url not set — using long-polling (getUpdates) for local dev',
+  // Trigger and routine deliveries go out through the bot the conversation
+  // came through: an agent's own bot, or the installation's with a name line.
+  // Registered once the bot runs, removed again on close.
+  const disposeProactiveSend = routines?.publishProactiveSend(
+    TELEGRAM_ROUTINE_CHANNEL,
+    createTelegramProactiveSend((asChannelKey) => fleet.sendDepsFor(asChannelKey)),
+  );
+  if (routines) core.log('info', 'telegram proactive send registered (triggers and routines deliver through the bot they were set on)');
+
+  // --- Agents' own bots (spec 2042 §5.3) --------------------------------
+  // Needs the vault write permission (tokens are stored per bot) and a kernel
+  // that takes agent identities; without either, agents keep `/agent`.
+  const secrets = ctx.secrets;
+  if (secrets.set && secrets.delete) {
+    const agentBotDeps: AgentBotDeps = {
+      fleet,
+      secrets: {
+        get: (key) => secrets.get(key),
+        keys: () => secrets.keys(),
+        set: (key, value) => secrets.set!(key, value),
+        delete: (key) => secrets.delete!(key),
+      },
+      startAgentBot: async (agentApi, agentMe) => {
+        const runtime = createBotRuntime(shared, agentApi, agentMe, { agentBot: true });
+        await runtime.start();
+        return runtime;
+      },
+      log: (level, message) => core.log(level, message),
+    };
+    // In the background, all at once: a slow or unreachable Telegram must not
+    // hold up activation; unreachable bots are retried (startStoredAgentBots).
+    void startStoredAgentBots(agentBotDeps).catch((err: unknown) =>
+      core.log('warn', `telegram agent bots could not be started: ${err instanceof Error ? err.message : String(err)}`),
     );
-    // Defensive: clear any pre-existing webhook the bot might still have
-    // registered from a previous environment, otherwise getUpdates returns
-    // 409 Conflict.
-    try {
-      await api.deleteWebhook({ drop_pending_updates: false });
-    } catch (err) {
-      core.log(
-        'warn',
-        `deleteWebhook (defensive) failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+    if (typeof core.registerAgentIdentityProvider === 'function') {
+      core.registerAgentIdentityProvider(ctx.agentId, createTelegramAgentIdentityProvider(agentBotDeps));
+      core.log('info', 'telegram agent bots: identity provider registered (one bot per agent)');
+    } else {
+      core.log('info', 'kernel takes no agent identities — agents are reached through the shared bot only');
     }
-    lpHandle = startLongPolling(api, bot, core);
   }
 
   // Self-contained operator-admin surface (S+7.7). Plugin owns the
@@ -329,7 +280,7 @@ export async function activate(
   // the token is missing OR the bot has no username (deeplinks impossible),
   // the admin router is NOT mounted and operator gets a clear log hint.
   const webhookMode: 'webhook' | 'long-poll' =
-    lpHandle ? 'long-poll' : 'webhook';
+    defaultBot.mode() === 'webhook' ? 'webhook' : 'long-poll';
   // Admin token gates the operator-admin surface (the Bearer the admin UI's
   // login form sends). There is no setup-form field and no env var for it:
   // it's auto-generated on first activation, persisted to the vault, and
@@ -424,77 +375,11 @@ export async function activate(
 
   return {
     close: async () => {
-      if (lpHandle) {
-        lpHandle.stop();
-        core.log('info', 'telegram long-polling stopped');
-      }
-      if (publicBaseUrl) {
-        try {
-          await api.deleteWebhook({ drop_pending_updates: false });
-          core.log('info', 'telegram webhook removed');
-        } catch (err) {
-          core.log(
-            'warn',
-            `deleteWebhook on shutdown failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
+      if (typeof disposeProactiveSend === 'function') disposeProactiveSend();
+      await fleet.stopAll();
+      await defaultBot.stop();
       core.log('info', 'Telegram channel closed (routes now 503)');
     },
   };
 }
 
-function joinUrl(base: string, path: string): string {
-  const trimmed = base.endsWith('/') ? base.slice(0, -1) : base;
-  return `${trimmed}${path.startsWith('/') ? path : `/${path}`}`;
-}
-
-function startLongPolling(
-  api: TelegramApiClient,
-  bot: TelegramBot,
-  core: CoreApi,
-): { stop(): void } {
-  let stopped = false;
-  let offset: number | undefined;
-
-  const loop = async (): Promise<void> => {
-    while (!stopped) {
-      try {
-        const updates: TelegramUpdate[] = await api.getUpdates({
-          ...(offset !== undefined ? { offset } : {}),
-          timeout: LONG_POLL_TIMEOUT_S,
-          allowed_updates: TELEGRAM_ALLOWED_UPDATES,
-        });
-        for (const update of updates) {
-          offset = update.update_id + 1;
-          // Fire-and-forget: don't let one slow turn block the polling loop.
-          void bot.handleUpdate(update).catch((err: unknown) => {
-            core.log(
-              'error',
-              `handleUpdate failed: ${err instanceof Error ? err.message : String(err)}`,
-            );
-          });
-        }
-      } catch (err) {
-        if (stopped) break;
-        core.log(
-          'warn',
-          `long-poll cycle failed: ${err instanceof Error ? err.message : String(err)} — retrying in ${String(LONG_POLL_BACKOFF_MS)}ms`,
-        );
-        await sleep(LONG_POLL_BACKOFF_MS);
-      }
-    }
-  };
-
-  void loop();
-  core.log('info', `telegram long-polling active (timeout=${String(LONG_POLL_TIMEOUT_S)}s)`);
-  return {
-    stop: () => {
-      stopped = true;
-    },
-  };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms));
-}

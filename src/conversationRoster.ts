@@ -16,9 +16,10 @@
  *  - `unknown` when nobody could be read at all.
  *
  * A group the bot is not activated in is not resolved (`undefined`): the bot
- * stays invisible there and keeps no list of its members. One installation is
- * one bot identity; a request on behalf of another identity is answered with
- * `undefined`, never with this bot's view.
+ * stays invisible there and keeps no list of its members. Each bot (the
+ * installation's own bot, every agent's own bot) has its own provider; a
+ * request on behalf of another identity is answered with `undefined`, never
+ * with this bot's view.
  */
 
 import type {
@@ -98,14 +99,9 @@ export class TelegramConversationRosterProvider implements ConversationRosterPro
     };
   }
 
-  /** `@name`, `name` (the binding keys) or `telegram:<botId>`. */
+  /** The bot key `tg:<botId>` (spec 2042 §5.3), the one form the kernel asks with. */
   private isOwnIdentity(channelKey: string): boolean {
-    const key = channelKey.trim().toLowerCase();
-    const { id, username } = this.deps.bot;
-    return (
-      key === `telegram:${String(id)}` ||
-      (username.length > 0 && (key === username.toLowerCase() || key === `@${username.toLowerCase()}`))
-    );
+    return channelKey.trim().toLowerCase() === `tg:${String(this.deps.bot.id)}`;
   }
 
   private nowIso(): string {

@@ -44,22 +44,48 @@ isn't Teams-specific.
 omadia treats agents as colleagues: every message has a speaker, and you can
 address a specific agent. This is what that means in Telegram.
 
-### Own identity per agent: not supported, and why
+### Own bot per agent
 
-A Telegram agent identity is a bot, and a bot is created in @BotFather with its
-own token. **One installation of this plugin is one bot token and therefore one
-identity.** Per-agent bots would need several tokens per installation, a webhook
-and secret per token, and pairing, group activation and member tracking per bot.
-None of that exists in this plugin, the setup form has no list field for tokens,
-and installing the plugin twice is not possible because its routes, vault and
-pairing state are keyed by the plugin.
+A Telegram agent identity is a bot, created in @BotFather with its own token.
+This plugin runs **the installation's own bot** (the token in its setup) and,
+next to it, **one bot per agent** (spec 2042 §5.3):
 
-So today the honest answer is: **the bot is one identity, the operator binds it
-to an agent** (Operator → Channels, binding on the bot `@username` or a chat id,
-resolved through `channelResolver@1`), and **other agents are reached with
-`/agent`**. If you want separate bots per agent, the cost for the operator
-would be one BotFather bot and one token per agent plus a plugin that
-manages several of them; that is not implemented.
+1. In @BotFather, `/newbot`, named like the agent (for example "Mira", username
+   `mira_omadia_bot`). Optional: `/setprivacy` → Disable, `/setuserpic`.
+2. In omadia, **Operator → Agents → the agent → Channels → Own bots →
+   Telegram**: paste the token and connect.
+
+The kernel hands the token to this plugin once; the plugin checks it with
+`getMe`, keeps it in its own vault (`agent_bot_token_<botId>`, never in the
+kernel), starts the bot (webhook `/api/telegram/agent-bots/<botId>/webhook`
+with its own derived secret, or long-polling) and returns the routing key
+`tg:<botId>`. From then on:
+
+- **everyone who writes to Mira's bot talks to Mira**, in a private chat and in
+  groups; the kernel routes the bot key to Mira before any selection or
+  binding, without a model in between. `/agent` there answers that this is
+  Mira's own bot;
+- **Mira's answers and posts go out through her bot**, with her name and
+  picture from Telegram, and without a name line;
+- a bot the kernel does not know as an agent's identity (removed in omadia)
+  answers only with a short system notice, never as another agent;
+- **group activation is per bot**: the bot speaks in a group once a paired
+  person added THAT bot, because who added which bot where is a fact about the
+  bot. The DM pairing is shared by all bots of the installation, because it
+  says which Telegram user is which person, a fact about the person and not
+  about a bot; pairing once is enough for every agent's bot;
+- removing the bot on the agent page stops it and deletes its token;
+- **triggers and routines** an agent sets in a conversation ("remind me
+  tomorrow at 9", a weekly report) are delivered later through the bot the
+  conversation runs through: through Mira's bot as Mira, through the
+  installation's bot named like an answer. Every turn opens the kernel's
+  routines scope (`routinesIntegration@1`, only with a database), which is
+  what offers the agent these tools here; a bot that was removed or given to
+  another agent delivers nothing.
+
+Agents without a bot of their own are reached through the installation's own
+bot with `/agent` (below). Its routing key is `tg:<botId>` too; the operator
+can still bind it or a chat to an agent (Operator → Channels).
 
 ### Choosing an agent: `/agent`, `/agents`
 
@@ -157,8 +183,9 @@ plugin has no card code. What it provides for that:
   recorded (Telegram does not report them to this plugin). With BotFather
   privacy mode on the bot only sees mentions, commands and replies, so a
   facilitation that needs every message needs privacy mode off.
-- The own-identity key of this bot is `@<bot_username>`. A send that names
-  another identity is refused, nothing is posted under a different name.
+- Every bot's own-identity key is `tg:<botId>` (the installation's bot and
+  each agent's bot). A send names the bot it goes out as; a key no bot of
+  this installation has is refused, nothing is posted under a different name.
 
 ### Groups
 

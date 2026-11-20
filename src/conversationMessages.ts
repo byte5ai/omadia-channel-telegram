@@ -53,18 +53,18 @@ export interface TelegramConversationMessageSink {
 export const REPORT_TIMEOUT_MS = 1_500;
 
 /**
- * The channel key the kernel knows this bot by: the `@bot_username` form the
- * SDK documents for Telegram binding keys (`channelKeyDirectory`).
+ * The channel key the kernel knows a bot by: `tg:<botId>` (spec 2042 §5.3).
+ * The same string for the installation's own bot and for an agent's own bot:
+ * routing resolves an agent bot on it (exclusive), `asChannelKey` names it on
+ * sends, and message subscriptions are kept under it.
  */
-export function telegramBotKey(username: string): string | undefined {
-  const bare = username.trim().replace(/^@/, '');
-  return bare ? `@${bare}` : undefined;
+export function telegramBotKey(botId: number): string {
+  return `tg:${String(botId)}`;
 }
 
-/** Does `key` name the bot with this username (`@name` or `name`, any case)? */
-export function isOwnBotKey(key: string, username: string): boolean {
-  const own = username.trim().replace(/^@/, '').toLowerCase();
-  return own.length > 0 && key.trim().replace(/^@/, '').toLowerCase() === own;
+/** Does `key` name the bot with this id? Keys compare lowercase (`tg:` + digits). */
+export function isOwnBotKey(key: string, botId: number): boolean {
+  return key.trim().toLowerCase() === telegramBotKey(botId);
 }
 
 export function telegramAuthor(user: TelegramUser | undefined): ConversationMessageEvent['author'] | undefined {
@@ -76,14 +76,13 @@ export function telegramAuthor(user: TelegramUser | undefined): ConversationMess
 export class TelegramConversationMessages {
   constructor(
     private readonly sink: TelegramConversationMessageSink,
-    private readonly botUsername: string,
+    private readonly botId: number,
     private readonly reportTimeoutMs: number = REPORT_TIMEOUT_MS,
   ) {}
 
   /** What the kernel hands this bot of a chat. */
   delivery(chatId: number): TelegramDeliveryMode {
-    const key = telegramBotKey(this.botUsername);
-    if (!key) return 'none';
+    const key = telegramBotKey(this.botId);
     const conversationId = String(chatId);
     try {
       if (this.sink.conversationDelivery) return this.sink.conversationDelivery(conversationId, key);
@@ -182,9 +181,9 @@ export class TelegramConversationMessages {
     part: Pick<ConversationMessageEvent, 'kind'> &
       Partial<Pick<ConversationMessageEvent, 'text' | 'replyToMessageId' | 'addressedToBot'>>,
   ): ConversationMessageEvent | undefined {
-    const botKey = telegramBotKey(this.botUsername);
+    const botKey = telegramBotKey(this.botId);
     const author = telegramAuthor(message.from);
-    if (!botKey || !author) return undefined;
+    if (!author) return undefined;
     return {
       channelId: CHANNEL_ID_PLACEHOLDER,
       channelType: TELEGRAM_EVENT_CHANNEL_TYPE,

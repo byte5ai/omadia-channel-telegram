@@ -58,3 +58,38 @@ function verifySecretHeader(req: Request, expected: string): boolean {
     return false;
   }
 }
+
+/**
+ * Spec 2042 §5.3 — the webhooks of agents' own bots, one router for all:
+ * `POST /<botId>/webhook`, each checked against that bot's own secret. A bot
+ * that is not running (removed, not started) answers 404 so Telegram stops.
+ */
+export function createTelegramAgentBotsRouter(
+  lookup: (botId: number) => TelegramRouterDeps | undefined,
+): Router {
+  const router = Router();
+  router.use(express.json({ limit: '1mb' }));
+  router.post('/:botId/webhook', (req: Request, res: Response) => {
+    const raw = req.params['botId'];
+    const botId = typeof raw === 'string' && /^\d{1,20}$/.test(raw) ? Number(raw) : undefined;
+    const target = botId === undefined ? undefined : lookup(botId);
+    if (!target) {
+      res.status(404).json({ ok: false, error: 'unknown_bot' });
+      return;
+    }
+    if (!verifySecretHeader(req, target.webhookSecret)) {
+      res.status(401).json({ ok: false, error: 'unauthorised' });
+      return;
+    }
+    const update = req.body as TelegramUpdate;
+    if (!update || typeof update.update_id !== 'number') {
+      res.status(400).json({ ok: false, error: 'invalid_update' });
+      return;
+    }
+    res.status(200).json({ ok: true });
+    void target.bot.handleUpdate(update).catch((err: unknown) => {
+      console.error(`[telegram] handleUpdate (agent bot ${String(botId)}) failed:`, err);
+    });
+  });
+  return router;
+}

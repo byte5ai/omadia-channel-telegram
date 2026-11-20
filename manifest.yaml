@@ -3,10 +3,10 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-telegram"
   name: "Telegram Channel"
-  version: "0.4.0"
+  version: "0.5.0"
   kind: "channel"
   domain: "channel.telegram"
-  description: "Telegram als zweiter First-Class-Channel von Omadia. Spricht die Telegram Bot API direkt (kein Drittanbieter-SDK), supports Webhook + Long-Polling-Fallback, Antworten als Klartext (Absender nur wo nötig, Beiträge anderer Agenten als \"Name: …\", Auswahl per Nummer statt Buttons), Agentenwahl per /agent, ehrlicher Gruppen-Roster (complete/partial/unknown). Self-contained — keine `depends_on`-Beziehung. Validiert die @omadia/channel-sdk Contracts gegen ein Runtime ohne Bot-Framework."
+  description: "Telegram als zweiter First-Class-Channel von Omadia. Spricht die Telegram Bot API direkt (kein Drittanbieter-SDK), supports Webhook + Long-Polling-Fallback, Antworten als Klartext (Absender nur wo nötig, Beiträge anderer Agenten als \"Name: …\", Auswahl per Nummer statt Buttons), Agentenwahl per /agent, ehrlicher Gruppen-Roster (complete/partial/unknown), eigener Bot pro Agent möglich. Self-contained — keine `depends_on`-Beziehung. Validiert die @omadia/channel-sdk Contracts gegen ein Runtime ohne Bot-Framework."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -17,10 +17,10 @@ identity:
     - "communication"
 
 compat:
-  # Placeholder for the kernel that ships the S1 routing contract (reject notices,
-  # speaker before the answer, SDK principal, /agent handled by the resolver's
-  # ChatAgent). The parent session sets the final range with the release.
-  core: ">=1.75.0 <2.0"
+  # The kernel that ships agent channel identities (plugin-api 1.79.0, S7):
+  # registerAgentIdentityProvider, asChannelKey per bot, agent_own_bot, the
+  # proactive send's speaker and disposer, RoutineTurnInput.conductorBinding.
+  core: ">=1.79.0 <2.0"
   node: ">=20"
 
 lifecycle:
@@ -127,8 +127,10 @@ playbook:
     getUpdates (LP-Modus). Gruppen-Roster via getChatAdministrators
     (Bot-API-Limitierung — non-admin Members bleiben für den Orchestrator
     unsichtbar). Antworten sind Klartext ohne Buttons, Reaktionen oder
-    Fußzeilen; eine Installation ist eine Bot-Identität, mehrere Agenten
-    werden per `/agent <Name>` gewählt (`/agent` ohne Namen löscht die Auswahl,
+    Fußzeilen. Neben dem eigenen Bot der Installation kann jeder Agent einen
+    eigenen Bot haben (Token auf der Agent-Seite in omadia, Schlüssel
+    `tg:<botId>`); wer diesem Bot schreibt, spricht mit genau diesem Agenten.
+    Ohne eigenen Bot werden Agenten per `/agent <Name>` gewählt (`/agent` ohne Namen löscht die Auswahl,
     `/agents` listet; der Agent hinter dem Resolver führt es aus, der Kanal reicht
     nur den Text durch). Fragen und Abstimmungen eines Agenten kommen als
     nummerierter Klartext und werden per Antwort auf die Nachricht beantwortet.
@@ -196,10 +198,15 @@ integrations:
 #                           absence is survivable (a host without the registry
 #                           routes to the default chatAgent; with the registry
 #                           chatAgent@1 is never a fallback).
+#   - `routinesIntegration@1` — kernel-side, only with a database: each turn
+#                           opens its routines scope (triggers, routines) and
+#                           deliveries go out through the bot they were set
+#                           on. Absent = agents set no triggers here.
 requires:
   - "chatAgent@^1"
   - "memoryStore@^1"
 optional_requires:
   - "channelResolver@1"
+  - "routinesIntegration@1"
   - "turnContext@1"
 provides: []
