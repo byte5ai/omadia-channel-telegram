@@ -23,8 +23,12 @@ import {
   formatSessionScope,
   isNoReply,
   logNoReplyDrop,
+  DEFAULT_PACE_PROFILE,
   InMemorySpeakerHistoryStore,
   makePrincipal,
+  runPacedTurn,
+  type ChannelPaceProfile,
+  type PaceClock,
   unsharedConversationScope,
   type ScopeId,
 } from '@omadia/channel-sdk';
@@ -461,6 +465,10 @@ export interface TelegramBotOptions {
    * a process-local store; the plugin passes a persistent one.
    */
   speakerHistory?: SpeakerHistoryReader;
+  /** Pace profile; default: SDK acknowledgement threshold, typing renewed every 4 s. */
+  paceProfile?: ChannelPaceProfile;
+  /** Timer seam for tests. */
+  paceClock?: PaceClock;
   /** Called for every message sent, with its speaker. Tests and audit. */
   onEmit?: (record: EmissionRecord) => void;
   /** Pairing infrastructure (S+7.6). Both required for /start <token> to work. */
@@ -498,6 +506,15 @@ export interface TelegramBotOptions {
   };
 }
 
+/** Telegram keeps the "typing…" state for about 5 s, so renew it every 4 s. No reply window. */
+export const TELEGRAM_PACE_PROFILE: ChannelPaceProfile = Object.freeze({
+  ...DEFAULT_PACE_PROFILE,
+  typingIntervalMs: 4_000,
+});
+
+/** The language of the acknowledgement; the channel already works in German. */
+const PACE_LOCALE = 'de';
+
 export class TelegramBot {
   private readonly api: TelegramApiClient;
   private readonly chatAgent: ChatAgent;
@@ -509,6 +526,8 @@ export class TelegramBot {
   private readonly memberTracker: GroupMemberTracker | undefined;
   private readonly invalidateRoster: ((chatId: number) => void) | undefined;
   private readonly emitter: TelegramEmitter;
+  private readonly paceProfile: ChannelPaceProfile;
+  private readonly paceClock: PaceClock | undefined;
   private readonly pendingReplies: PendingReplyStore;
   private readonly pairingStore: PairingStore;
   private readonly pairingTokens: PairingTokenRegistry;
@@ -538,6 +557,8 @@ export class TelegramBot {
       ...(opts.onEmit ? { onEmit: opts.onEmit } : {}),
     });
     this.pendingReplies = new PendingReplyStore(opts.pendingReplyTtlMs);
+    this.paceProfile = opts.paceProfile ?? TELEGRAM_PACE_PROFILE;
+    this.paceClock = opts.paceClock;
     this.pairingStore = opts.pairingStore;
     this.pairingTokens = opts.pairingTokens;
     this.dmPolicy = opts.dmPolicy ?? 'pairing';
@@ -1214,7 +1235,6 @@ export class TelegramBot {
         ? await this.rosterProviderFactory(input.chat.id)
         : undefined;
 
-    const stopTyping = this.startTypingLoop(input.chat.id);
     const priorTurns = this.history.get(sessionScope);
 
     const run = async (): Promise<void> => {
@@ -1223,24 +1243,45 @@ export class TelegramBot {
         `[telegram] turn start chat=${String(input.chat.id)} type=${input.chat.type} user=${userId ?? 'anon'} history=${String(priorTurns.length)} roster=${rosterProvider ? 'on' : 'off'} attach=${String(attachCount)}`,
       );
       try {
-        const result = await chatAgent.chat({
-          userMessage: input.userMessage,
-          sessionScope,
-          origin,
-          ...(userId ? { userId } : {}),
-          ...(priorTurns.length > 0
-            ? {
-                priorTurns: priorTurns.map((t) => ({
-                  userMessage: t.userMessage,
-                  assistantAnswer: t.assistantAnswer,
-                })),
-              }
-            : {}),
-          ...(input.attachments && input.attachments.length > 0
-            ? { attachments: input.attachments }
-            : {}),
-          userTimeZone: 'Europe/Berlin',
-        });
+        // Pace (spec 2042 §5.8): typing from the start, exactly one
+        // acknowledgement when the work clearly takes longer, no progress
+        // chatter. Telegram has no reply window, so the answer is always an
+        // ordinary message.
+        const { result } = await runPacedTurn(
+          () =>
+            chatAgent.chat({
+              userMessage: input.userMessage,
+              sessionScope,
+              origin,
+              ...(userId ? { userId } : {}),
+              ...(priorTurns.length > 0
+                ? {
+                    priorTurns: priorTurns.map((t) => ({
+                      userMessage: t.userMessage,
+                      assistantAnswer: t.assistantAnswer,
+                    })),
+                  }
+                : {}),
+              ...(input.attachments && input.attachments.length > 0
+                ? { attachments: input.attachments }
+                : {}),
+              userTimeZone: 'Europe/Berlin',
+            }),
+          this.paceProfile,
+          {
+            sendTyping: async () => {
+              await this.api.sendChatAction({ chat_id: input.chat.id, action: 'typing' });
+            },
+            // The speaker is not known before the answer exists, so the
+            // acknowledgement is a plugin notice (`system`), not an agent line.
+            sendAck: (text) => this.emitter.sendSystem(input.chat.id, text),
+            onHookError: (hook, error) =>
+              console.warn(
+                `[telegram] pace ${hook} failed: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+          },
+          { locale: PACE_LOCALE, ...(this.paceClock ? { clock: this.paceClock } : {}) },
+        );
 
         if (isNoReply(result)) {
           logNoReplyDrop('telegram', {
@@ -1282,8 +1323,6 @@ export class TelegramBot {
         console.error('[telegram] orchestrator failure:', err);
         const detail = err instanceof Error ? err.message : String(err);
         await this.emitter.sendSystem(input.chat.id, failureNoticeText(detail));
-      } finally {
-        stopTyping();
       }
     };
 
@@ -1292,26 +1331,6 @@ export class TelegramBot {
     } else {
       await run();
     }
-  }
-
-  // ---------- typing-loop helper --------------------------------------
-
-  private startTypingLoop(chatId: number): () => void {
-    let stopped = false;
-    const tick = (): void => {
-      if (stopped) return;
-      this.api
-        .sendChatAction({ chat_id: chatId, action: 'typing' })
-        .catch(() => {
-          /* swallow — typing is best-effort */
-        });
-    };
-    tick();
-    const handle = setInterval(tick, 4_000);
-    return () => {
-      stopped = true;
-      clearInterval(handle);
-    };
   }
 }
 

@@ -14,6 +14,7 @@ export {
   TELEGRAM_CHANNEL_TYPE,
   TelegramApiClient,
   TelegramBot,
+  TELEGRAM_PACE_PROFILE,
   telegramTurnOrigin,
   type TelegramBotOptions,
   type TelegramUpdate,
