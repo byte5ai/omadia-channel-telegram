@@ -70,8 +70,10 @@ with its own derived secret, or long-polling) and returns the routing key
 - a bot the kernel does not know as an agent's identity (removed in omadia)
   answers only with a short system notice, never as another agent;
 - **group activation is per bot**: the bot speaks in a group once a paired
-  person added that bot. The DM pairing (which Telegram user is which person)
-  is shared by all bots of the installation;
+  person added THAT bot, because who added which bot where is a fact about the
+  bot. The DM pairing is shared by all bots of the installation, because it
+  says which Telegram user is which person, a fact about the person and not
+  about a bot; pairing once is enough for every agent's bot;
 - removing the bot on the agent page stops it and deletes its token.
 
 Agents without a bot of their own are reached through the installation's own
