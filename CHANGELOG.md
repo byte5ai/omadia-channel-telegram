@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+An agent's own Telegram bot (byte5ai/omadia#2042, spec §5.3, §8 item 20).
+Needs a kernel with `registerAgentIdentityProvider` (S7); on an older kernel
+the plugin runs its own bot only, as before.
+
+- **One bot per agent** next to the installation's own bot: the plugin
+  registers an `AgentIdentityProvider` (field: bot token). The token is
+  checked with `getMe`, stored in the plugin vault as
+  `agent_bot_token_<botId>`, and the bot is started (webhook
+  `/api/telegram/agent-bots/<botId>/webhook` with a per-bot secret derived
+  from the installation's webhook secret, or long-polling). Boot restarts
+  every stored bot; removal stops it and deletes the token.
+- **Bot key `tg:<botId>`** for every bot: routing key, `asChannelKey`,
+  `receivedByChannelKey` and the roster identity (was `@username`).
+- **An agent bot resolves on its own key only** and answers only when the
+  kernel reports the key as that agent's identity (`exclusive`); otherwise a
+  system notice, never another agent. Its answers carry no name line.
+- **Sends, rosters and presence per bot**: `asChannelKey` picks exactly that
+  bot (unknown key: unreachable); `presentIn` tells the kernel which agent
+  bots are members of a group.
+- **Group activations per bot**, DM pairings shared.
+
 ## 0.4.0
 
 Agents as colleagues in Telegram (byte5ai/omadia#2042, issue #7). Needs a

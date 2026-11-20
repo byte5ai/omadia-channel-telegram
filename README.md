@@ -44,22 +44,39 @@ isn't Teams-specific.
 omadia treats agents as colleagues: every message has a speaker, and you can
 address a specific agent. This is what that means in Telegram.
 
-### Own identity per agent: not supported, and why
+### Own bot per agent
 
-A Telegram agent identity is a bot, and a bot is created in @BotFather with its
-own token. **One installation of this plugin is one bot token and therefore one
-identity.** Per-agent bots would need several tokens per installation, a webhook
-and secret per token, and pairing, group activation and member tracking per bot.
-None of that exists in this plugin, the setup form has no list field for tokens,
-and installing the plugin twice is not possible because its routes, vault and
-pairing state are keyed by the plugin.
+A Telegram agent identity is a bot, created in @BotFather with its own token.
+This plugin runs **the installation's own bot** (the token in its setup) and,
+next to it, **one bot per agent** (spec 2042 §5.3):
 
-So today the honest answer is: **the bot is one identity, the operator binds it
-to an agent** (Operator → Channels, binding on the bot `@username` or a chat id,
-resolved through `channelResolver@1`), and **other agents are reached with
-`/agent`**. If you want separate bots per agent, the cost for the operator
-would be one BotFather bot and one token per agent plus a plugin that
-manages several of them; that is not implemented.
+1. In @BotFather, `/newbot`, named like the agent (for example "Mira", username
+   `mira_omadia_bot`). Optional: `/setprivacy` → Disable, `/setuserpic`.
+2. In omadia, **Operator → Agents → the agent → Channels → Own bots →
+   Telegram**: paste the token and connect.
+
+The kernel hands the token to this plugin once; the plugin checks it with
+`getMe`, keeps it in its own vault (`agent_bot_token_<botId>`, never in the
+kernel), starts the bot (webhook `/api/telegram/agent-bots/<botId>/webhook`
+with its own derived secret, or long-polling) and returns the routing key
+`tg:<botId>`. From then on:
+
+- **everyone who writes to Mira's bot talks to Mira**, in a private chat and in
+  groups; the kernel routes the bot key to Mira before any selection or
+  binding, without a model in between. `/agent` there answers that this is
+  Mira's own bot;
+- **Mira's answers and posts go out through her bot**, with her name and
+  picture from Telegram, and without a name line;
+- a bot the kernel does not know as an agent's identity (removed in omadia)
+  answers only with a short system notice, never as another agent;
+- **group activation is per bot**: the bot speaks in a group once a paired
+  person added that bot. The DM pairing (which Telegram user is which person)
+  is shared by all bots of the installation;
+- removing the bot on the agent page stops it and deletes its token.
+
+Agents without a bot of their own are reached through the installation's own
+bot with `/agent` (below). Its routing key is `tg:<botId>` too; the operator
+can still bind it or a chat to an agent (Operator → Channels).
 
 ### Choosing an agent: `/agent`, `/agents`
 
