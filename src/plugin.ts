@@ -41,6 +41,7 @@ import { PairingStore } from './pairingStore.js';
 import { PairingTokenRegistry } from './pairingTokens.js';
 import { TelegramRosterProvider } from './telegramRoster.js';
 import { GroupMemberTracker } from './groupMemberTracker.js';
+import { registerBotCommands } from './botCommands.js';
 import { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 import {
   TELEGRAM_ALLOWED_UPDATES,
@@ -149,6 +150,9 @@ export async function activate(
   const pairingTokens = new PairingTokenRegistry();
   const pairingStore = new PairingStore(memoryStore);
   core.log('info', 'telegram pairing store ready (memoryStore-backed)');
+
+  // Native "/" menu: /agent. The kernel parses the text; we only pass it on.
+  await registerBotCommands(api, (level, message) => core.log(level, message));
 
   // Who spoke in which chat, persisted, drives the plain name line (INV-4).
   const speakerHistory = new PersistentSpeakerHistoryStore(memoryStore);
