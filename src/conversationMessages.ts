@@ -37,7 +37,20 @@ export interface TelegramConversationMessageSink {
   isAllMessagesSubscribed(conversationId: string, channelKey: string): boolean;
   conversationDelivery?(conversationId: string, channelKey: string): TelegramDeliveryMode;
   emit(event: ConversationMessageEvent): void;
+  /**
+   * Like `emit`, but the kernel says whether it consumed the message as the
+   * typed answer to an open question (`answeredCard`). Absent on a kernel
+   * without `reportConversationMessage`: then the message is emitted and the
+   * turn runs as before.
+   */
+  report?(event: ConversationMessageEvent): Promise<{ answeredCard: boolean }>;
 }
+
+/**
+ * How long a turn waits for the kernel's verdict on a message. The report never
+ * delays the turn longer: after this the turn starts as if the answer were `false`.
+ */
+export const REPORT_TIMEOUT_MS = 1_500;
 
 /**
  * The channel key the kernel knows this bot by: the `@bot_username` form the
@@ -64,6 +77,7 @@ export class TelegramConversationMessages {
   constructor(
     private readonly sink: TelegramConversationMessageSink,
     private readonly botUsername: string,
+    private readonly reportTimeoutMs: number = REPORT_TIMEOUT_MS,
   ) {}
 
   /** What the kernel hands this bot of a chat. */
@@ -81,8 +95,9 @@ export class TelegramConversationMessages {
   }
 
   /**
-   * A human message. In `addressed` mode only when `isAddressed`. `said` is
-   * the text without the bot's own mention. Returns whether an event went out.
+   * A human message the engine drives (`all` mode) or that only needs recording.
+   * In `addressed` mode only when `isAddressed`. `said` is the text without the
+   * bot's own mention. Fire-and-forget; returns whether an event went out.
    */
   emitCreated(
     message: TelegramMessage,
@@ -90,10 +105,71 @@ export class TelegramConversationMessages {
     isAddressed: boolean,
     said?: string,
   ): boolean {
-    if (mode === 'none' || (mode === 'addressed' && !isAddressed)) return false;
+    const event = this.createdEvent(message, mode, isAddressed, said);
+    return event ? this.send(event) : false;
+  }
+
+  /**
+   * A message the channel would otherwise start a turn for (the addressed path,
+   * a private chat): reported to the kernel BEFORE the turn. Returns true when
+   * the kernel consumed it as the typed answer to an open question, in which
+   * case the channel starts no turn. A slow or failing report returns false
+   * (never throws, never delays the turn past the timeout), and a kernel
+   * without the verdict gets a plain event.
+   */
+  async reportCreated(
+    message: TelegramMessage,
+    mode: TelegramDeliveryMode,
+    isAddressed: boolean,
+    said?: string,
+  ): Promise<boolean> {
+    const event = this.createdEvent(message, mode, isAddressed, said);
+    if (!event) return false;
+    const report = this.sink.report;
+    if (!report) {
+      this.send(event);
+      return false;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const verdict = await Promise.race([
+        report.call(this.sink, event),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), this.reportTimeoutMs);
+        }),
+      ]);
+      if (verdict === undefined) {
+        console.warn(`[telegram] report of message ${event.messageId} took over ${String(this.reportTimeoutMs)} ms — the turn starts without the verdict`);
+      }
+      return verdict?.answeredCard === true;
+    } catch (err) {
+      console.error('[telegram] message report failed:', errorMessage(err));
+      return false;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private send(event: ConversationMessageEvent): boolean {
+    try {
+      this.sink.emit(event);
+      return true;
+    } catch (err) {
+      console.error('[telegram] message event emit failed:', errorMessage(err));
+      return false;
+    }
+  }
+
+  private createdEvent(
+    message: TelegramMessage,
+    mode: TelegramDeliveryMode,
+    isAddressed: boolean,
+    said?: string,
+  ): ConversationMessageEvent | undefined {
+    if (mode === 'none' || (mode === 'addressed' && !isAddressed)) return undefined;
     const text = (said ?? message.text ?? message.caption ?? '').trim();
-    if (text.length === 0) return false;
-    return this.emit(message, {
+    if (text.length === 0) return undefined;
+    return this.build(message, {
       kind: 'created',
       text,
       ...(message.reply_to_message ? { replyToMessageId: String(message.reply_to_message.message_id) } : {}),
@@ -101,32 +177,26 @@ export class TelegramConversationMessages {
     });
   }
 
-  private emit(
+  private build(
     message: TelegramMessage,
     part: Pick<ConversationMessageEvent, 'kind'> &
       Partial<Pick<ConversationMessageEvent, 'text' | 'replyToMessageId' | 'addressedToBot'>>,
-  ): boolean {
-    try {
-      const botKey = telegramBotKey(this.botUsername);
-      const author = telegramAuthor(message.from);
-      if (!botKey || !author) return false;
-      this.sink.emit({
-        channelId: CHANNEL_ID_PLACEHOLDER,
-        channelType: TELEGRAM_EVENT_CHANNEL_TYPE,
-        conversationId: String(message.chat.id),
-        conversationType: message.chat.type === 'private' ? 'direct' : 'group',
-        receivedByChannelKey: botKey,
-        messageId: String(message.message_id),
-        revision: 0,
-        author,
-        occurredAt: new Date(message.date * 1000).toISOString(),
-        ...part,
-      });
-      return true;
-    } catch (err) {
-      console.error('[telegram] message event emit failed:', errorMessage(err));
-      return false;
-    }
+  ): ConversationMessageEvent | undefined {
+    const botKey = telegramBotKey(this.botUsername);
+    const author = telegramAuthor(message.from);
+    if (!botKey || !author) return undefined;
+    return {
+      channelId: CHANNEL_ID_PLACEHOLDER,
+      channelType: TELEGRAM_EVENT_CHANNEL_TYPE,
+      conversationId: String(message.chat.id),
+      conversationType: message.chat.type === 'private' ? 'direct' : 'group',
+      receivedByChannelKey: botKey,
+      messageId: String(message.message_id),
+      revision: 0,
+      author,
+      occurredAt: new Date(message.date * 1000).toISOString(),
+      ...part,
+    };
   }
 }
 

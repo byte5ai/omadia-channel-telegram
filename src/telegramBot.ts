@@ -883,12 +883,22 @@ export class TelegramBot {
     // The bot's own mention is not part of what the person said.
     const entities = message.text != null ? message.entities : message.caption_entities;
     const said = this.stripBotMention((message.text ?? message.caption ?? '').trim(), entities);
-    const isRecorded = messages.emitCreated(message, mode, isAddressed, said);
-    if (mode !== 'all') return false;
-    console.log(
-      `[telegram] recorded for the engine, no turn chat=${String(message.chat.id)} recorded=${String(isRecorded)}`,
-    );
-    return true;
+    // `all`: the engine drives, the adapter starts no turn.
+    if (mode === 'all') {
+      const isRecorded = messages.emitCreated(message, mode, isAddressed, said);
+      console.log(
+        `[telegram] recorded for the engine, no turn chat=${String(message.chat.id)} recorded=${String(isRecorded)}`,
+      );
+      return true;
+    }
+    // `addressed`: the turn would run, so the kernel is asked first whether it
+    // consumed the message as the typed answer to an open question ("2" to a
+    // poll). If so there is no turn: no acknowledgement, no agent answer.
+    const isAnswer = await messages.reportCreated(message, mode, isAddressed, said);
+    if (isAnswer) {
+      console.log(`[telegram] consumed as an answer to an open question, no turn chat=${String(message.chat.id)}`);
+    }
+    return isAnswer;
   }
 
   /**

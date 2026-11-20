@@ -145,6 +145,12 @@ plugin has no card code. What it provides for that:
   mention, a command, a reply to the bot, or a private chat). The bot's own
   mention is cut from the text. In a group a reply to the bot's message is
   addressed even with privacy mode on.
+- **A typed answer is not also a turn.** Where the channel would start a turn
+  for a message (it addresses the bot, or a private chat), the plugin first
+  reports it with `reportConversationMessage` and waits at most 1.5 s. If the
+  kernel consumed it as the answer to an open question, no turn starts: no
+  typing, no acknowledgement, no agent answer. A slow or failing report, or a
+  kernel without the method, means the turn runs as before.
 - In a conversation the kernel subscribed an agent to, what people write is
   recorded with the author Telegram states (`all` mode: no turn is started;
   `addressed` mode: what addresses the bot). Edits and deletions are not

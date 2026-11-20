@@ -74,6 +74,10 @@ before that kernel runs.
   what people write as `created` events (delivery mode `all` / `addressed` /
   `none`) with `replyToMessageId` and `addressedToBot`, the bot's own mention
   cut from the text. See README.
+- **No double turn for a typed answer**: an addressed message is reported with
+  `reportConversationMessage` (feature-detected, 1.5 s timeout, errors logged,
+  never thrown) before the turn; `answeredCard: true` starts no turn. Delivery
+  mode `all` is unchanged.
 - **compat.core** `>=1.74.0 <2.0` (placeholder; the parent session sets the
   final range with the release).
 - Own identity per agent (one bot token per agent) is **not** supported; the

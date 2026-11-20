@@ -29,6 +29,7 @@ import {
   resolveChannelRoute,
   InMemoryConversationHistoryStore,
   type ChannelHandle,
+  type ConversationMessageEvent,
   type CoreApi,
 } from '@omadia/channel-sdk';
 import type { ChatAgentBundle } from '@omadia/orchestrator';
@@ -204,6 +205,8 @@ export async function activate(
   const emitConversationMessage = core.emitConversationMessage?.bind(core);
   const isAllMessagesSubscribed = core.isAllMessagesSubscribed?.bind(core);
   const conversationDelivery = core.conversationDelivery?.bind(core);
+  // The kernel's verdict on a message the channel would start a turn for.
+  const reportConversationMessage = core.reportConversationMessage?.bind(core);
   const conversationMessages =
     emitConversationMessage && isAllMessagesSubscribed && botUsername
       ? new TelegramConversationMessages(
@@ -219,6 +222,12 @@ export async function activate(
             // The catalog id is authoritative here; the adapter cannot know it.
             emit: (event) =>
               emitConversationMessage({ ...event, channelId: ctx.agentId, channelType: TELEGRAM_CHANNEL_TYPE }),
+            ...(reportConversationMessage
+              ? {
+                  report: (event: ConversationMessageEvent) =>
+                    reportConversationMessage({ ...event, channelId: ctx.agentId, channelType: TELEGRAM_CHANNEL_TYPE }),
+                }
+              : {}),
           },
           botUsername,
         )

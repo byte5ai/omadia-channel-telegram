@@ -17,18 +17,27 @@ import { BOT_ID, BOT_USERNAME, groupText, harness, privateText, speakerA } from 
 const GROUP = -100900;
 type Mode = 'all' | 'addressed' | 'none';
 
-async function rig() {
+type Report = (event: ConversationMessageEvent) => Promise<{ answeredCard: boolean }>;
+
+async function rig(report?: Report, reportTimeoutMs?: number) {
   const events: ConversationMessageEvent[] = [];
+  const reported: ConversationMessageEvent[] = [];
   let mode: Mode = 'all';
   const conversationMessages = new TelegramConversationMessages(
-    { isAllMessagesSubscribed: () => mode === 'all', conversationDelivery: () => mode, emit: (e) => void events.push(e) },
+    {
+      isAllMessagesSubscribed: () => mode === 'all',
+      conversationDelivery: () => mode,
+      emit: (e) => void events.push(e),
+      ...(report ? { report: (e: ConversationMessageEvent) => (reported.push(e), report(e)) } : {}),
+    },
     BOT_USERNAME,
+    reportTimeoutMs,
   );
   const h = harness({ conversationMessages } as Partial<TelegramBotOptions>);
   await h.pairingStore.putGroupActivation({
     chatId: GROUP, chatTitle: 'Team', chatType: 'supergroup', activatedBy: 'h', activatedVia: 'auto', activatedAt: '2026-11-20T00:00:00Z',
   });
-  return { h, events, setMode: (m: Mode) => { mode = m; } };
+  return { h, events, reported, setMode: (m: Mode) => { mode = m; } };
 }
 
 /** A person's message in the group; `replyTo` makes it a Telegram reply, to the bot when `toBot`. */
@@ -140,5 +149,95 @@ describe('a contribution in a facilitation, written as plain text', () => {
     await r.h.bot.handleUpdate(groupText('Geheim', -100999, 56));
     assert.equal(r.events.length, 0);
     assert.equal(r.h.api.sent.length, 0);
+  });
+});
+
+describe('a typed answer is not also a turn (kernel verdict before the turn)', () => {
+  const consumed: Report = async () => ({ answeredCard: true });
+  const ignored: Report = async () => ({ answeredCard: false });
+
+  it('consumed in a private chat: no turn, no typing, no acknowledgement, no agent answer', async () => {
+    const r = await rig(consumed);
+    r.setMode('addressed');
+    await r.h.bot.handleUpdate(privateText('2', 90));
+    assert.equal(r.h.turns.length, 0);
+    assert.deepEqual(r.h.api.actions, []);
+    assert.equal(r.h.api.sent.length, 0);
+    assert.equal(r.reported.length, 1);
+    assert.equal(r.reported[0]?.text, '2');
+    assert.equal(r.events.length, 0, 'reported, not emitted twice');
+  });
+
+  it('consumed in a group (a reply to the bot): no turn either', async () => {
+    const r = await rig(consumed);
+    r.setMode('addressed');
+    await r.h.bot.handleUpdate(groupMessage('mittwoch', 91, 123));
+    assert.equal(r.h.turns.length, 0);
+    assert.equal(r.h.api.sent.length, 0);
+    assert.equal(r.reported[0]?.replyToMessageId, '123');
+    assert.equal(r.reported[0]?.addressedToBot, true);
+  });
+
+  it('not consumed: the turn runs as usual', async () => {
+    const r = await rig(ignored);
+    r.setMode('addressed');
+    r.h.answers.push({ text: 'Antwort', speaker: speakerA });
+    await r.h.bot.handleUpdate(privateText('Was kostet das?', 92));
+    assert.equal(r.h.turns.length, 1);
+    assert.deepEqual(r.h.api.sent.map((x) => x.params['text']), ['Antwort']);
+    assert.equal(r.reported.length, 1);
+  });
+
+  it('a failing report never fails or blocks the turn', async () => {
+    const r = await rig(async () => { throw new Error('kernel down'); });
+    r.setMode('addressed');
+    r.h.answers.push({ text: 'Antwort', speaker: speakerA });
+    await r.h.bot.handleUpdate(privateText('2', 93));
+    assert.equal(r.h.turns.length, 1);
+  });
+
+  it('a slow report is abandoned after the timeout and the turn starts (verdict unknown = false)', async () => {
+    const r = await rig(() => new Promise(() => undefined), 20);
+    r.setMode('addressed');
+    r.h.answers.push({ text: 'Antwort', speaker: speakerA });
+    const started = Date.now();
+    await r.h.bot.handleUpdate(privateText('2', 94));
+    assert.equal(r.h.turns.length, 1);
+    assert.ok(Date.now() - started < 1_000, 'not held up by a report that never returns');
+  });
+
+  it('a late "consumed" after the timeout does not retract the turn that already ran', async () => {
+    let release: (v: { answeredCard: boolean }) => void = () => undefined;
+    const r = await rig(() => new Promise((resolve) => { release = resolve; }), 10);
+    r.setMode('addressed');
+    await r.h.bot.handleUpdate(privateText('2', 95));
+    release({ answeredCard: true });
+    assert.equal(r.h.turns.length, 1);
+  });
+
+  it('`all` is unchanged: recorded for the engine, no turn, no report', async () => {
+    const r = await rig(consumed);
+    r.setMode('all');
+    await r.h.bot.handleUpdate(groupMessage('2', 96, 123));
+    assert.equal(r.reported.length, 0);
+    assert.equal(r.events.length, 1);
+    assert.equal(r.h.turns.length, 0);
+  });
+
+  it('not addressed in `addressed` mode: nothing is reported', async () => {
+    const r = await rig(consumed);
+    r.setMode('addressed');
+    await r.h.bot.handleUpdate(groupMessage('Nur so unter uns', 97));
+    assert.equal(r.reported.length, 0);
+    assert.equal(r.h.turns.length, 0);
+  });
+
+  it('a kernel without reportConversationMessage: the event is emitted and the turn runs as before', async () => {
+    const r = await rig();
+    r.setMode('addressed');
+    r.h.answers.push({ text: 'Antwort', speaker: speakerA });
+    await r.h.bot.handleUpdate(privateText('2', 98));
+    assert.equal(r.events.length, 1);
+    assert.equal(r.h.turns.length, 1);
   });
 });
