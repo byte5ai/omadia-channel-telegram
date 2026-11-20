@@ -72,6 +72,7 @@ export interface ChatInput {
   userMessage: string;
   sessionScope?: string;
   userId?: string;
+  origin?: { principal?: unknown; conversationType?: string; channelConversationId?: string; messageId?: string; speaker?: unknown };
 }
 
 export interface Harness {
@@ -97,7 +98,7 @@ export function harness(overrides: Partial<TelegramBotOptions> = {}, files?: Map
     chatAgent: {
       chat: async (input: ChatInput) => {
         turns.push(input);
-        return answers.shift() ?? { text: 'ok' };
+        return answers.shift() ?? { text: 'ok', speaker: speakerA };
       },
     },
     history: {
@@ -156,3 +157,26 @@ export function groupText(text: string, chatId: number, fromId: number, withBotC
 
 export const speakerA = { kind: 'agent', agentId: 'agent-a', slug: 'mira', displayName: 'Mira' } as const;
 export const speakerB = { kind: 'agent', agentId: 'agent-b', slug: 'ben', displayName: 'Ben' } as const;
+
+export interface RouteCall {
+  readonly type: string;
+  readonly key: string;
+  readonly context: { principal?: string; locale?: string; explicitSlug?: string } | undefined;
+}
+
+/**
+ * A fake `channelResolver@1`: `decide` answers per channel key. Records every
+ * lookup so a test can read which keys and which principal the bot sent.
+ */
+export function fakeResolver(
+  decide: (key: string) => Record<string, unknown>,
+): { readonly lookup: () => { resolve: (...a: never[]) => unknown }; readonly calls: RouteCall[] } {
+  const calls: RouteCall[] = [];
+  const resolver = {
+    resolve: (type: string, key: string, context?: RouteCall['context']) => {
+      calls.push({ type, key, context });
+      return decide(key);
+    },
+  };
+  return { lookup: () => resolver as never, calls };
+}

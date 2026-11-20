@@ -139,6 +139,14 @@ export interface TurnOriginShim {
   readonly container?: { readonly kind: 'team' | 'tenant'; readonly id: string };
   /** Speaking person — the existing #333 type. Audit only, not the axis key. */
   readonly principal?: Principal;
+  /** Group or direct, as Telegram reports it (the chat type). */
+  readonly conversationType?: 'direct' | 'group';
+  /** The Bot API chat id, as subscriptions and posts address the conversation. */
+  readonly channelConversationId?: string;
+  /** The Bot API `message_id` this turn answers. */
+  readonly messageId?: string;
+  /** Who spoke, in the channel's terms. */
+  readonly speaker?: { readonly kind: string; readonly id: string; readonly displayName?: string };
 }
 
 export interface ChatTurnInput {

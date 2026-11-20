@@ -170,36 +170,31 @@ export async function activate(
     core.log('info', 'kernel has no roster registry — conversation roster not registered');
   }
 
-  // Native "/" menu: /agent. The kernel parses the text; we only pass it on.
+  // Native "/" menu: /agent, /agents. The agent behind the resolver carries
+  // them out; the channel passes the text on unchanged.
   await registerBotCommands(api, (level, message) => core.log(level, message));
 
   // Who spoke in which chat, persisted, drives the plain name line (INV-4).
   const speakerHistory = new PersistentSpeakerHistoryStore(memoryStore);
 
-  // --- Per-turn Agent resolution (US7) ---------------------------------
-  // Late-resolved channelResolver@1: when the multi-orchestrator registry is
-  // active AND the operator bound this Telegram bot (or a specific chat) to an
-  // Agent in /operator/channels, each inbound turn routes to that scoped
-  // Agent. Without the resolver service the bot falls back to the default
-  // chatAgent@1 (the `chatAgent` constant captured above).
-  const channelResolver = ctx.services.get<ChannelBindingResolver>(
-    CHANNEL_RESOLVER_SERVICE,
-  );
-  const resolveChatAgentForActivity = channelResolver
-    ? (input: { channelType: 'telegram'; channelKey: string }) =>
-        channelResolver.resolve(input.channelType, input.channelKey)
-    : undefined;
+  // --- Per-turn agent resolution (S1 contract) --------------------------
+  // `channelResolver@1` decides per turn which agent answers (`bound` with its
+  // speaker, or `reject` with a notice; there is no fallback agent). It is
+  // looked up on every turn, not cached here. A host without the registry
+  // publishes no resolver and every turn goes to the default chatAgent@1.
+  const channelResolver = (): ChannelBindingResolver | undefined =>
+    ctx.services.get<ChannelBindingResolver>(CHANNEL_RESOLVER_SERVICE);
   core.log(
     'info',
-    resolveChatAgentForActivity
-      ? 'Telegram per-turn Agent resolution active via channelResolver@1'
-      : 'channelResolver@1 not published — Telegram routes all turns to default chatAgent',
+    channelResolver()
+      ? 'Telegram per-turn agent resolution active via channelResolver@1'
+      : 'channelResolver@1 not published — Telegram routes all turns to the default chatAgent',
   );
 
   const bot = new TelegramBot({
     api,
     chatAgent,
-    ...(resolveChatAgentForActivity ? { resolveChatAgentForActivity } : {}),
+    channelResolver,
     history: conversationHistoryStore,
     turnContext,
     rosterProvider: (chatId) => rosterProvider.forChat(chatId),

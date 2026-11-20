@@ -4,7 +4,7 @@
  *
  * Every outgoing message of this channel goes through {@link TelegramEmitter}
  * and carries a speaker: an agent's answer (stamped by the kernel from the
- * routing decision) or `system` (a notice of the management layer or of this
+ * routing decision; an answer without one is refused) or `system` (a notice of the management layer or of this
  * plugin). No other module calls `sendMessage`, `sendPhoto` or
  * `sendDocument`; `tests/telegramEmitterPaths.test.ts` fails when one does.
  *
@@ -49,8 +49,7 @@ export const TELEGRAM_DECORATIONS: readonly { readonly id: string }[] = Object.f
 /** What the emitter reports for each message it sent (tests, audit logging). */
 export interface EmissionRecord {
   readonly chatId: number;
-  /** `unstamped`: a kernel that predates the speaker field sent the answer. */
-  readonly speaker: 'agent' | 'system' | 'unstamped';
+  readonly speaker: 'agent' | 'system';
   readonly kind: 'text' | 'photo' | 'document';
 }
 
@@ -66,8 +65,6 @@ export interface TelegramEmitterOptions {
 }
 
 export class TelegramEmitter {
-  private warnedUnstamped = false;
-
   constructor(private readonly opts: TelegramEmitterOptions) {}
 
   /**
@@ -79,13 +76,12 @@ export class TelegramEmitter {
       await this.sendSystem(chatId, answer.systemNotice?.text ?? answer.text);
       return;
     }
-    const speaker = answer.speaker ? 'agent' : 'unstamped';
-    if (speaker === 'unstamped' && !this.warnedUnstamped) {
-      this.warnedUnstamped = true;
-      console.warn(
-        '[telegram] answer without speaker — the kernel predates the speaker field (#2045); sending without attribution',
-      );
+    if (!answer.speaker) {
+      // The bot withholds such an answer before it gets here; an emitter that
+      // is handed one anyway refuses it rather than post a nameless message.
+      throw new Error('telegram emitter: an answer without a speaker cannot be sent');
     }
+    const speaker = 'agent';
     this.assertDecorationsDeclared();
 
     const conversationKey = conversationKeyOf(chatId);

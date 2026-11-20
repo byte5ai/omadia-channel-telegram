@@ -10,7 +10,10 @@ import { strict as assert } from 'node:assert';
 import { paceAckText, type PaceClock } from '@omadia/channel-sdk';
 import { TELEGRAM_PACE_PROFILE } from '@omadia/channel-telegram';
 
-import { harness, privateText, speakerA } from './fakes.js';
+import { fakeResolver, harness, privateText, speakerA } from './fakes.js';
+
+const boundTo = (chatAgent: unknown, speaker: unknown = speakerA) =>
+  fakeResolver(() => ({ decision: 'bound', chatAgent, ...(speaker ? { speaker } : {}) }));
 
 function manualClock() {
   let now = 0;
@@ -72,10 +75,11 @@ describe('pace in the Telegram channel', () => {
     assert.equal(h.api.sent.length, 1);
   });
 
-  it('long work: typing renewed, exactly one acknowledgement, then the answer as a normal message', async () => {
+  it('long work: typing renewed, exactly one acknowledgement UNDER THE AGENT, then the answer', async () => {
     const { clock, advance } = manualClock();
     const agent = slowAgent();
-    const h = harness({ paceClock: clock, chatAgent: { chat: agent.chat } as never });
+    const resolver = boundTo({ chat: agent.chat });
+    const h = harness({ paceClock: clock, channelResolver: resolver.lookup });
     const turn = h.bot.handleUpdate(privateText('lang', 11));
     await settle();
     assert.equal(h.api.actions.length, 1, 'typing at the start');
@@ -95,12 +99,46 @@ describe('pace in the Telegram channel', () => {
 
     agent.release('Fertig.');
     await turn;
+    // The acknowledgement is the agent's, so the answer that follows from the
+    // same agent needs no name line.
     assert.deepEqual(h.api.sent.map((s) => s.params['text']), [paceAckText('de'), 'Fertig.']);
-    assert.deepEqual(h.emissions.map((e) => e.speaker), ['system', 'agent']);
+    assert.deepEqual(h.emissions.map((e) => e.speaker), ['agent', 'agent']);
 
     const typingAfter = h.api.actions.length;
     await advance(60_000);
     assert.equal(h.api.actions.length, typingAfter, 'typing stops when the answer is out');
+  });
+
+  it('the acknowledgement is worded in the sender\'s language and speaks as the announced agent', async () => {
+    const { clock, advance } = manualClock();
+    const agent = slowAgent();
+    const resolver = boundTo({ chat: agent.chat });
+    const h = harness({ paceClock: clock, channelResolver: resolver.lookup });
+    const update = privateText('long', 12);
+    update.message!.from = { ...update.message!.from!, language_code: 'en-GB' };
+    const turn = h.bot.handleUpdate(update);
+    await settle();
+    await advance(8_001);
+    await settle();
+    assert.deepEqual(h.api.sent.map((s) => s.params['text']), [paceAckText('en')]);
+    assert.equal(h.emissions[0]?.speaker, 'agent', 'never `system` any more');
+    agent.release('done');
+    await turn;
+  });
+
+  it('no announced speaker: no acknowledgement (typing carries the wait), the answer still comes', async () => {
+    const { clock, advance } = manualClock();
+    const agent = slowAgent();
+    const h = harness({ paceClock: clock, chatAgent: { chat: agent.chat } as never });
+    const turn = h.bot.handleUpdate(privateText('lang', 13));
+    await settle();
+    await advance(20_000);
+    await settle();
+    assert.equal(h.api.sent.length, 0, 'nothing is said under a wrong or no name');
+    assert.ok(h.api.actions.length >= 5);
+    agent.release('Fertig.');
+    await turn;
+    assert.deepEqual(h.api.sent.map((s) => s.params['text']), ['Fertig.']);
   });
 
   it('a failing typing call never fails the turn', async () => {

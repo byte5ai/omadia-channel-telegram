@@ -93,11 +93,13 @@ describe('criterion 5 — one emitter, every message attributed', () => {
     assert.equal(h.api.sent.length, h.emissions.length);
   });
 
-  it('a kernel that predates the speaker field is reported as unstamped, never as an agent', async () => {
+  it('an answer without a speaker is withheld (fail closed), never posted nameless', async () => {
     const h = harness();
     h.answers.push({ text: 'ohne speaker' });
     await h.bot.handleUpdate(privateText('hi', 4));
-    assert.equal(h.emissions[0]?.speaker, 'unstamped');
+    assert.equal(h.api.sent.length, 1);
+    assert.doesNotMatch(String(h.api.sent[0]?.params['text']), /ohne speaker/);
+    assert.deepEqual(h.emissions.map((e) => e.speaker), ['system']);
   });
 
   it('the group-activation DM is a system notice', async () => {

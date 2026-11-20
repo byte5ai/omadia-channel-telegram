@@ -182,18 +182,17 @@ describe('W5 telegramTurnOrigin — channel type and principal', () => {
     assert.equal(origin.channelType, TELEGRAM_CHANNEL_TYPE);
   });
 
-  it('carries the speaker as a user principal in the pairing-store spelling', () => {
-    // `telegram:<id>` is what `ChatTurnInput.userId` and the pairing store
-    // already use, so an audit row matches a binding without a translation
-    // table. It deliberately differs from the personal scope's raw id — the SDK
-    // reads the SCOPE for the tier, never the principal.
+  it('carries the speaker as the SDK principal `user:telegram-chat:<id>`', () => {
+    // Built by `channelUserPrincipal`, the one form every channel uses
+    // (S1 contract). It deliberately differs from the personal scope's raw id —
+    // the SDK reads the SCOPE for the tier, never the principal.
     const origin = telegramTurnOrigin({
       chatType: 'private',
       conversationScope: scopeForChat(12345),
       fromId: 12345,
     });
 
-    assert.deepEqual(origin.principal, { kind: 'user', userId: 'telegram:12345' });
+    assert.deepEqual(origin.principal, { kind: 'user', userId: 'telegram-chat:12345' });
     assert.deepEqual(origin.scope, { kind: 'personal', userId: '12345' });
   });
 
