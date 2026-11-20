@@ -27,6 +27,8 @@ export type AgentResolution =
       readonly agent: ChatAgent;
       /** The agent that will answer, known before the answer (the pace acknowledgement speaks as it). */
       readonly speaker?: AgentSpeaker;
+      /** The key IS this agent's own bot (spec 2042 §5.3). */
+      readonly exclusive?: boolean;
     }
   | {
       /**
@@ -36,6 +38,8 @@ export type AgentResolution =
       readonly kind: 'refused';
       readonly agent?: ChatAgent;
       readonly notice?: SystemNotice;
+      /** The refusal is about the agent whose own bot this key is. */
+      readonly exclusive?: boolean;
     }
   | {
       /** The resolver exists but failed. Nothing answers: there is no agent to fall back to. */
@@ -115,7 +119,12 @@ export function resolveAgentForTurn(
   const byDefault = results.find((r) => r.decision === 'bound' && r.chatAgent);
   const winner = exclusive ?? decided ?? byDefault;
   if (winner?.decision === 'bound' && winner.chatAgent) {
-    return { kind: 'agent', agent: winner.chatAgent, ...(winner.speaker ? { speaker: winner.speaker } : {}) };
+    return {
+      kind: 'agent',
+      agent: winner.chatAgent,
+      ...(winner.speaker ? { speaker: winner.speaker } : {}),
+      ...(winner.exclusive === true ? { exclusive: true } : {}),
+    };
   }
   const rejected = exclusive ?? results[0];
   return rejected ? rejectionOf(rejected) : { kind: 'unavailable' };
@@ -126,5 +135,6 @@ function rejectionOf(result: ChannelResolveResult): Extract<AgentResolution, { k
     kind: 'refused',
     ...(result.chatAgent ? { agent: result.chatAgent } : {}),
     ...(result.notice ? { notice: result.notice } : {}),
+    ...(result.exclusive === true ? { exclusive: true } : {}),
   };
 }

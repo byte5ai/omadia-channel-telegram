@@ -18,9 +18,10 @@
  * answer carries beyond that (verifier badge, consulted agents, disclaimer,
  * follow-ups) stays in the structured answer.
  *
- * A Telegram bot is one identity per installation, and several agents can
- * answer through it (selection by `/agent`), so the channel never claims a
- * native identity per agent: `nativeIdentity` is false.
+ * The installation's own bot is shared: several agents answer through it
+ * (selection by `/agent`), so it never claims a native identity and shows a
+ * name line where the speaker would be unclear. An agent's own bot (spec 2042
+ * §5.3) IS that agent: `nativeIdentity` is true and no name line is shown.
  */
 
 import {
@@ -62,6 +63,11 @@ export interface TelegramEmitterOptions {
   readonly speakerHistory: SpeakerHistoryReader;
   /** Called once per message sent. */
   readonly onEmit?: (record: EmissionRecord) => void;
+  /**
+   * Spec 2042 §5.3 — this bot IS one agent (its own bot): the client shows
+   * the bot's name, so no answer ever needs a name line.
+   */
+  readonly nativeIdentity?: boolean;
 }
 
 export class TelegramEmitter {
@@ -87,7 +93,7 @@ export class TelegramEmitter {
     const conversationKey = conversationKeyOf(chatId);
     await this.opts.speakerHistory.hydrate?.(conversationKey);
     const text = renderPlainAnswer(answer, {
-      nativeIdentity: false,
+      nativeIdentity: this.opts.nativeIdentity === true,
       conversationKey,
       speakerHistory: this.opts.speakerHistory,
     });

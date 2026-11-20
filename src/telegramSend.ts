@@ -7,10 +7,10 @@
  * identity only to a provider that DECLARES it (`supports`). What is declared
  * here is what is done:
  *
- *  - `asChannelKey`: the provider posts as exactly the bot it runs, whose key
- *    is `@<bot_username>` (the SDK's Telegram key), or returns `unreachable`.
- *    It never posts as another identity. A Telegram installation is ONE bot,
- *    so only an agent whose identity IS this bot can post through it.
+ *  - `asChannelKey`: the provider posts as exactly the bot that key names,
+ *    `tg:<botId>`: the installation's own bot or an agent's own bot (spec
+ *    2042 §5.3), or returns `unreachable`. It never posts as another identity.
+ *    Without `asChannelKey` the installation's own bot posts.
  *  - no `poll`, no `card`: Telegram shows neither. The KERNEL then posts the
  *    question itself as numbered text (`renderCardAsText`), keeps it open and
  *    turns a typed reply into the typed `card_answer` event. This plugin has no
@@ -32,7 +32,6 @@ import type {
   TargetedSendProvider,
 } from '@omadia/channel-sdk';
 
-import { isOwnBotKey } from './conversationMessages.js';
 import type { PairingStore } from './pairingStore.js';
 import type { TelegramEmitter } from './telegramEmitter.js';
 
@@ -41,12 +40,20 @@ export const TELEGRAM_SEND_CHANNEL_TYPE = 'telegram';
 /** What the providers declare: the own identity, nothing else. */
 export const TELEGRAM_SEND_CAPABILITIES: SendProviderCapabilities = Object.freeze({ asChannelKey: true });
 
+/** One bot the providers can post as. */
 export interface TelegramSendDeps {
   readonly emitter: Pick<TelegramEmitter, 'sendPosted'>;
   readonly pairingStore: PairingStore;
   readonly dmPolicy: DmPolicy;
-  readonly botUsername: string;
+  /** `tg:<botId>`. */
+  readonly botKey: string;
 }
+
+/**
+ * The bot a send goes out as: `undefined` = the installation's own bot, else
+ * the bot with exactly that key. `undefined` back = no such bot runs here.
+ */
+export type TelegramBotLookup = (asChannelKey: string | undefined) => TelegramSendDeps | undefined;
 
 type Unreachable = Extract<TargetedDeliveryOutcome, { outcome: 'unreachable' }>;
 
@@ -81,17 +88,18 @@ export function classifyPostError(err: unknown, isDirect: boolean): Unreachable 
   return unreachable('channel_error', message);
 }
 
+/** The poster for `asChannelKey`, or why there is none. Never another bot. */
+function posterFor(lookup: TelegramBotLookup, asChannelKey: string | undefined): TelegramPoster | Unreachable {
+  const key = asChannelKey === undefined ? undefined : asChannelKey.trim().toLowerCase();
+  const bot = lookup(key);
+  if (!bot || (key !== undefined && bot.botKey !== key)) {
+    return unreachable('not_permitted', `no Telegram bot '${String(asChannelKey)}' runs in this installation; nothing was posted`);
+  }
+  return new TelegramPoster(bot);
+}
+
 class TelegramPoster {
   constructor(private readonly deps: TelegramSendDeps) {}
-
-  /** `undefined` = this bot may post as that identity. */
-  identityRefusal(asChannelKey: string | undefined): Unreachable | undefined {
-    if (asChannelKey === undefined || isOwnBotKey(asChannelKey, this.deps.botUsername)) return undefined;
-    return unreachable(
-      'not_permitted',
-      `this Telegram installation is the bot @${this.deps.botUsername.replace(/^@/, '')}; it does not post as '${asChannelKey}'`,
-    );
-  }
 
   async canPostTo(chatId: number): Promise<Unreachable | undefined> {
     if (chatId < 0) {
@@ -131,14 +139,13 @@ class TelegramPoster {
 }
 
 /** Post INTO a conversation (a group or the bot's own chat with a person). */
-export function createTelegramConversationSend(deps: TelegramSendDeps): ConversationSendProvider {
-  const poster = new TelegramPoster(deps);
+export function createTelegramConversationSend(lookup: TelegramBotLookup): ConversationSendProvider {
   return {
     channelType: TELEGRAM_SEND_CHANNEL_TYPE,
     supports: TELEGRAM_SEND_CAPABILITIES,
     async sendToConversation(conversationId, message, opts) {
-      const refusal = poster.identityRefusal(opts?.asChannelKey);
-      if (refusal) return refusal;
+      const poster = posterFor(lookup, opts?.asChannelKey);
+      if (!(poster instanceof TelegramPoster)) return poster;
       const chatId = parseChatId(conversationId);
       if (chatId === undefined) return unreachable('no_binding', `'${conversationId}' is not a Telegram chat id`);
       const blocked = await poster.canPostTo(chatId);
@@ -149,14 +156,13 @@ export function createTelegramConversationSend(deps: TelegramSendDeps): Conversa
 }
 
 /** DM one already-resolved person. */
-export function createTelegramTargetedSend(deps: TelegramSendDeps): TargetedSendProvider {
-  const poster = new TelegramPoster(deps);
+export function createTelegramTargetedSend(lookup: TelegramBotLookup): TargetedSendProvider {
   return {
     channelType: TELEGRAM_SEND_CHANNEL_TYPE,
     supports: TELEGRAM_SEND_CAPABILITIES,
     async sendToUser(target, message, opts) {
-      const refusal = poster.identityRefusal(opts?.asChannelKey);
-      if (refusal) return refusal;
+      const poster = posterFor(lookup, opts?.asChannelKey);
+      if (!(poster instanceof TelegramPoster)) return poster;
       const chatId =
         target.userRef?.kind === 'telegram-chat' ? parseChatId(target.userRef.id) : chatIdOfPrincipal(target.principalId);
       if (chatId === undefined || chatId < 0) {

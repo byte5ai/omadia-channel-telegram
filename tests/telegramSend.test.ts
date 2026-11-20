@@ -16,7 +16,9 @@ import {
   type DmPolicy,
 } from '@omadia/channel-telegram';
 
-import { BOT_USERNAME, memoryStore, recordingApi } from './fakes.js';
+import { BOT_ID, memoryStore, recordingApi } from './fakes.js';
+
+const BOT_KEY = `tg:${String(BOT_ID)}`;
 
 const GROUP = -100777;
 
@@ -38,14 +40,16 @@ async function rig(opts: { dmPolicy?: DmPolicy; activate?: boolean; failWith?: s
     emitter: new TelegramEmitter({ api: api.client, speakerHistory: new InMemorySpeakerHistoryStore() }),
     pairingStore,
     dmPolicy: opts.dmPolicy ?? ('open' as DmPolicy),
-    botUsername: BOT_USERNAME,
+    botKey: BOT_KEY,
   };
+  // One bot: no key and its own key name it, nothing else does.
+  const lookup = (key: string | undefined) => (key === undefined || key === BOT_KEY ? deps : undefined);
   return {
     api,
     files,
     pairingStore,
-    conversation: createTelegramConversationSend(deps),
-    targeted: createTelegramTargetedSend(deps),
+    conversation: createTelegramConversationSend(lookup),
+    targeted: createTelegramTargetedSend(lookup),
   };
 }
 
@@ -66,14 +70,14 @@ describe('declared capabilities', () => {
 describe('conversation send', () => {
   it('posts the text as this bot and returns the message id and the conversation', async () => {
     const r = await rig();
-    const out = await r.conversation.sendToConversation(String(GROUP), { text: 'Kurzer Stand: alles grün.' }, { asChannelKey: `@${BOT_USERNAME}` });
+    const out = await r.conversation.sendToConversation(String(GROUP), { text: 'Kurzer Stand: alles grün.' }, { asChannelKey: BOT_KEY });
     assert.deepEqual(out, { outcome: 'delivered', messageId: '1', conversationId: String(GROUP) });
     assert.deepEqual(texts(r), ['Kurzer Stand: alles grün.']);
   });
 
-  it('accepts the bare or lowercase bot key, and no key at all', async () => {
+  it('accepts the bot key in any case, and no key at all', async () => {
     const r = await rig();
-    for (const key of [BOT_USERNAME, `@${BOT_USERNAME.toLowerCase()}`, undefined]) {
+    for (const key of [BOT_KEY, BOT_KEY.toUpperCase(), undefined]) {
       const out = await r.conversation.sendToConversation(String(GROUP), { text: 'x' }, key ? { asChannelKey: key } : undefined);
       assert.equal(out.outcome, 'delivered');
     }
@@ -81,7 +85,7 @@ describe('conversation send', () => {
 
   it('never posts as another identity: a foreign key is unreachable and nothing goes out', async () => {
     const r = await rig();
-    const out = await r.conversation.sendToConversation(String(GROUP), { text: 'x' }, { asChannelKey: '@MirasOwnBot' });
+    const out = await r.conversation.sendToConversation(String(GROUP), { text: 'x' }, { asChannelKey: 'tg:4242' });
     assert.equal(out.outcome, 'unreachable');
     assert.equal(out.outcome === 'unreachable' && out.code, 'not_permitted');
     assert.equal(r.api.sent.length, 0);
@@ -135,7 +139,7 @@ describe('a card or poll that arrives anyway is refused, nothing half posted', (
 describe('targeted send (a DM to one person)', () => {
   it('posts to the private chat of `user:telegram-chat:<id>` and reports that chat as the conversation', async () => {
     const r = await rig();
-    const out = await r.targeted.sendToUser({ principalId: 'user:telegram-chat:4711' }, { text: 'Kurze Rückfrage.' }, { asChannelKey: `@${BOT_USERNAME}` });
+    const out = await r.targeted.sendToUser({ principalId: 'user:telegram-chat:4711' }, { text: 'Kurze Rückfrage.' }, { asChannelKey: BOT_KEY });
     assert.deepEqual(out, { outcome: 'delivered', messageId: '1', conversationId: '4711' });
     assert.equal(r.api.sent[0]?.params['chat_id'], 4711);
   });
@@ -168,7 +172,7 @@ describe('targeted send (a DM to one person)', () => {
     const b = await blocked.targeted.sendToUser({ principalId: 'user:telegram-chat:9' }, { text: 'x' });
     assert.equal(b.outcome === 'unreachable' && b.code, 'blocked');
     const r = await rig();
-    const c = await r.targeted.sendToUser({ principalId: 'user:telegram-chat:9' }, { text: 'x' }, { asChannelKey: '@Other' });
+    const c = await r.targeted.sendToUser({ principalId: 'user:telegram-chat:9' }, { text: 'x' }, { asChannelKey: '@ColleagueBot' });
     assert.equal(c.outcome === 'unreachable' && c.code, 'not_permitted');
     assert.equal(r.api.sent.length, 0);
   });

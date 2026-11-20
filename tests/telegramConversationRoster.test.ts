@@ -109,9 +109,10 @@ describe('TelegramConversationRosterProvider', () => {
 
   it('answers for its own identity only, never another bot’s view', async () => {
     const p = await provider({ admins: [user(1, 'Anna')], count: 2 });
-    assert.ok(await p.getRoster(String(CHAT), { asChannelKey: '@ColleagueBot' }));
-    assert.ok(await p.getRoster(String(CHAT), { asChannelKey: 'telegram:999' }));
-    assert.equal(await p.getRoster(String(CHAT), { asChannelKey: '@OtherBot' }), undefined);
+    assert.ok(await p.getRoster(String(CHAT), { asChannelKey: 'tg:999' }));
+    assert.ok(await p.getRoster(String(CHAT), { asChannelKey: 'TG:999' }));
+    assert.equal(await p.getRoster(String(CHAT), { asChannelKey: '@ColleagueBot' }), undefined);
+    assert.equal(await p.getRoster(String(CHAT), { asChannelKey: 'tg:1000' }), undefined);
     assert.equal(await p.getRoster(String(CHAT), { asChannelKey: '28:app-id' }), undefined);
   });
 
