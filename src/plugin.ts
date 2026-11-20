@@ -41,6 +41,7 @@ import { PairingStore } from './pairingStore.js';
 import { PairingTokenRegistry } from './pairingTokens.js';
 import { TelegramRosterProvider } from './telegramRoster.js';
 import { GroupMemberTracker } from './groupMemberTracker.js';
+import { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 import {
   TELEGRAM_ALLOWED_UPDATES,
   TelegramApiClient,
@@ -149,6 +150,9 @@ export async function activate(
   const pairingStore = new PairingStore(memoryStore);
   core.log('info', 'telegram pairing store ready (memoryStore-backed)');
 
+  // Who spoke in which chat, persisted, drives the plain name line (INV-4).
+  const speakerHistory = new PersistentSpeakerHistoryStore(memoryStore);
+
   // --- Per-turn Agent resolution (US7) ---------------------------------
   // Late-resolved channelResolver@1: when the multi-orchestrator registry is
   // active AND the operator bound this Telegram bot (or a specific chat) to an
@@ -180,6 +184,7 @@ export async function activate(
     invalidateRoster: (chatId) => rosterProvider.invalidate(chatId),
     pairingStore,
     pairingTokens,
+    speakerHistory,
     dmPolicy,
     // S+7.7+: identity drives the in-group mention/reply filter (so the
     // bot only answers when explicitly addressed once privacy-mode is

@@ -43,13 +43,13 @@ export interface DmPolicyDecision {
   /**
    * Optional refusal text to send. Undefined → caller stays silent (the
    * `'disabled'` branch chooses silence on purpose; spammers shouldn't
-   * see whether the bot is reachable). MarkdownV2-escaped.
+   * see whether the bot is reachable). Plain text, sent as a `system` notice.
    */
   refusal?: string;
 }
 
 const REFUSAL_NOT_PAIRED =
-  'Du bist noch nicht mit dem byte5 Harness verbunden\\. Bitte frag den Operator nach einem Pairing\\-Link\\.';
+  'Du bist noch nicht mit dem byte5 Harness verbunden. Bitte frag den Operator nach einem Pairing-Link.';
 
 /**
  * Returns whether the DM should proceed to the orchestrator turn, plus

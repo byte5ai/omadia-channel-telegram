@@ -24,15 +24,17 @@ export {
 } from './telegramBot.js';
 
 export {
-  TelegramRenderer,
-  escapeMarkdownV2,
-  type PendingCallback,
-} from './telegramRenderer.js';
+  TELEGRAM_DECORATIONS,
+  TELEGRAM_DECORATION_CHANNEL,
+  TelegramEmitter,
+  conversationKeyOf,
+  failureNoticeText,
+  type EmissionRecord,
+  type TelegramEmitterOptions,
+} from './telegramEmitter.js';
 
-export {
-  createTelegramWebhookRouter,
-  type TelegramRouterDeps,
-} from './messagesRouter.js';
+export { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
+export { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 
 export {
   MAX_VERIFIED_MEMBERS,

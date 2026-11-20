@@ -1,18 +1,16 @@
 /**
  * Telegram channel adapter. Speaks the Bot API directly via fetch — no
  * third-party SDK. Handles the inbound Update envelope (message +
- * callback_query) and drives the orchestrator; outgoing wire-format
- * rendering (MarkdownV2, inline keyboards, callback_data tokenisation)
- * lives in telegramRenderer.ts.
+ * callback_query) and drives the orchestrator; every outgoing message leaves
+ * through telegramEmitter.ts.
  *
  * Scope (v1):
- * - Text messages → ChatAgent.chat → renderer.renderAnswer(...)
- * - Inline-keyboard interactives via renderer
+ * - Text messages → ChatAgent.chat → emitter.sendAnswer(...) (plain text via
+ *   the SDK renderer; no buttons, reactions or footers — see telegramEmitter.ts)
+ * - Choice / slot questions as numbered text; the typed number or label is
+ *   turned back into the value (pendingReplies.ts)
  * - Group rosters via getChatAdministrators (best-effort; non-admin members
  *   stay invisible — Bot API gives no public membership listing)
- * - Pending-callback resolution: renderer.takePendingCallback resolves the
- *   token into the stashed echo string, which is fed back as the next user
- *   message
  *
  * Out of scope (deferred):
  * - SSO / OBO (no Telegram equivalent of Bot-Framework userTokenClient)
@@ -25,6 +23,7 @@ import {
   formatSessionScope,
   isNoReply,
   logNoReplyDrop,
+  InMemorySpeakerHistoryStore,
   makePrincipal,
   unsharedConversationScope,
   type ScopeId,
@@ -40,11 +39,13 @@ import type {
 import type { PairingStore } from './pairingStore.js';
 import type { GroupMemberTracker } from './groupMemberTracker.js';
 import type { PairingTokenRegistry } from './pairingTokens.js';
-import { escapeHtml } from './markdownToHtml.js';
 import {
-  TelegramRenderer,
-  type InlineKeyboardMarkup,
-} from './telegramRenderer.js';
+  failureNoticeText,
+  TelegramEmitter,
+  type EmissionRecord,
+  type SpeakerHistoryReader,
+} from './telegramEmitter.js';
+import { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
 
 // ---------------------------------------------------------------------------
 // Bot API envelope — narrow shapes for the fields we read
@@ -282,7 +283,6 @@ export class TelegramApiClient {
     chat_id: number;
     text: string;
     parse_mode?: 'MarkdownV2' | 'HTML';
-    reply_markup?: InlineKeyboardMarkup;
     disable_web_page_preview?: boolean;
   }): Promise<TelegramMessage> {
     return await this.call<TelegramMessage>('sendMessage', params);
@@ -311,6 +311,17 @@ export class TelegramApiClient {
     action: 'typing' | 'upload_photo' | 'upload_document';
   }): Promise<true> {
     return await this.call<true>('sendChatAction', params);
+  }
+
+  /**
+   * Register the bot's native command menu (the "/" suggestions). Replaces
+   * the list of the given scope and language.
+   */
+  async setMyCommands(params: {
+    commands: ReadonlyArray<{ command: string; description: string }>;
+    language_code?: string;
+  }): Promise<true> {
+    return await this.call<true>('setMyCommands', params);
   }
 
   async answerCallbackQuery(params: {
@@ -443,8 +454,15 @@ export interface TelegramBotOptions {
   memberTracker?: GroupMemberTracker;
   /** Drops a chat's cached roster after a membership change. */
   invalidateRoster?: (chatId: number) => void;
-  /** Per-chat lock to serialise concurrent callback_query + message turns. */
-  pendingCallbackTtlMs?: number;
+  /** How long a numbered question stays answerable by number or label. */
+  pendingReplyTtlMs?: number;
+  /**
+   * Who spoke in which chat (drives the plain name line, INV-4). Defaults to
+   * a process-local store; the plugin passes a persistent one.
+   */
+  speakerHistory?: SpeakerHistoryReader;
+  /** Called for every message sent, with its speaker. Tests and audit. */
+  onEmit?: (record: EmissionRecord) => void;
   /** Pairing infrastructure (S+7.6). Both required for /start <token> to work. */
   pairingStore: PairingStore;
   pairingTokens: PairingTokenRegistry;
@@ -480,8 +498,6 @@ export interface TelegramBotOptions {
   };
 }
 
-const DEFAULT_CALLBACK_TTL_MS = 10 * 60 * 1000; // 10 min
-
 export class TelegramBot {
   private readonly api: TelegramApiClient;
   private readonly chatAgent: ChatAgent;
@@ -492,7 +508,8 @@ export class TelegramBot {
     | undefined;
   private readonly memberTracker: GroupMemberTracker | undefined;
   private readonly invalidateRoster: ((chatId: number) => void) | undefined;
-  private readonly renderer: TelegramRenderer;
+  private readonly emitter: TelegramEmitter;
+  private readonly pendingReplies: PendingReplyStore;
   private readonly pairingStore: PairingStore;
   private readonly pairingTokens: PairingTokenRegistry;
   private readonly dmPolicy: DmPolicy;
@@ -515,10 +532,12 @@ export class TelegramBot {
     this.rosterProviderFactory = opts.rosterProvider;
     this.memberTracker = opts.memberTracker;
     this.invalidateRoster = opts.invalidateRoster;
-    this.renderer = new TelegramRenderer(
-      this.api,
-      opts.pendingCallbackTtlMs ?? DEFAULT_CALLBACK_TTL_MS,
-    );
+    this.emitter = new TelegramEmitter({
+      api: this.api,
+      speakerHistory: opts.speakerHistory ?? new InMemorySpeakerHistoryStore(),
+      ...(opts.onEmit ? { onEmit: opts.onEmit } : {}),
+    });
+    this.pendingReplies = new PendingReplyStore(opts.pendingReplyTtlMs);
     this.pairingStore = opts.pairingStore;
     this.pairingTokens = opts.pairingTokens;
     this.dmPolicy = opts.dmPolicy ?? 'pairing';
@@ -663,15 +682,10 @@ export class TelegramBot {
     // without a prior /start, since the user has chatted with the bot
     // before (via the pairing flow).
     try {
-      await this.api.sendMessage({
-        chat_id: upd.from.id,
-        text: [
-          '<b>Gruppe aktiviert</b>',
-          '',
-          `Der byte5 Harness Bot ist jetzt freigeschaltet in der Gruppe „${escapeHtml(activation.chatTitle)}“. Schreib mich dort einfach an (mit @-Mention wenn der Privacy-Mode aktiv ist).`,
-        ].join('\n'),
-        parse_mode: 'HTML',
-      });
+      await this.emitter.sendSystem(
+        upd.from.id,
+        `Gruppe aktiviert: Der byte5 Harness Bot ist jetzt freigeschaltet in der Gruppe „${activation.chatTitle}“. Schreib mich dort einfach an (mit @-Mention wenn der Privacy-Mode aktiv ist).`,
+      );
     } catch (err) {
       console.warn(
         `[telegram] DM-confirm to harness=${adderBinding.harnessIdentityId} failed: ${err instanceof Error ? err.message : String(err)} (group still activated)`,
@@ -738,10 +752,10 @@ export class TelegramBot {
     const rawText = message.text?.trim() ?? message.caption?.trim() ?? '';
     if (!rawText && inboundImages.length === 0) {
       // Truly empty: stickers, voice, video without caption — out of scope.
-      await this.api.sendMessage({
-        chat_id: message.chat.id,
-        text: 'Ich kann derzeit nur Text-Nachrichten und Bilder verarbeiten.',
-      });
+      await this.emitter.sendSystem(
+        message.chat.id,
+        'Ich kann derzeit nur Text-Nachrichten und Bilder verarbeiten.',
+      );
       return;
     }
     // For images without caption, give the orchestrator a generic
@@ -779,11 +793,7 @@ export class TelegramBot {
       });
       if (!decision.allow) {
         if (decision.refusal) {
-          await this.api.sendMessage({
-            chat_id: message.chat.id,
-            text: decision.refusal,
-            parse_mode: 'HTML',
-          });
+          await this.emitter.sendSystem(message.chat.id, decision.refusal);
         }
         // disabled-mode: silent — log a marker so operators can audit
         console.log(
@@ -833,6 +843,13 @@ export class TelegramBot {
           : message.caption_entities;
       userMessage = this.stripBotMention(text, stripEntities);
     }
+
+    // A typed number or label answers the question the agent just asked
+    // (plain-text parity for choice cards, spec §5.14).
+    userMessage = this.pendingReplies.resolve(
+      pendingReplyKey(message.chat.id, message.from?.id),
+      userMessage,
+    );
 
     await this.runTurn({
       chat: message.chat,
@@ -1069,27 +1086,27 @@ export class TelegramBot {
       // Telegram always populates `from` for private-chat messages; if it
       // doesn't, the update is malformed. Refuse silently with a generic
       // hint so we don't leak the pairing mechanism.
-      await this.api.sendMessage({
-        chat_id: input.chat.id,
-        text: 'Ich konnte deinen Telegram-Account nicht erkennen.',
-      });
+      await this.emitter.sendSystem(
+        input.chat.id,
+        'Ich konnte deinen Telegram-Account nicht erkennen.',
+      );
       return;
     }
     if (input.token.length === 0) {
       // Bare /start with no token = first-time-greeting flow, not pairing.
-      await this.api.sendMessage({
-        chat_id: input.chat.id,
-        text: 'Hi! Ich bin der byte5 Harness Bot. Du kannst mich Sachen über deine Daten fragen.',
-      });
+      await this.emitter.sendSystem(
+        input.chat.id,
+        'Hi! Ich bin der byte5 Harness Bot. Du kannst mich Sachen über deine Daten fragen.',
+      );
       return;
     }
 
     const pending = this.pairingTokens.consume(input.token);
     if (!pending) {
-      await this.api.sendMessage({
-        chat_id: input.chat.id,
-        text: 'Dieser Pairing-Link ist abgelaufen oder bereits verwendet. Bitte lass dir vom Operator einen neuen Link generieren.',
-      });
+      await this.emitter.sendSystem(
+        input.chat.id,
+        'Dieser Pairing-Link ist abgelaufen oder bereits verwendet. Bitte lass dir vom Operator einen neuen Link generieren.',
+      );
       return;
     }
 
@@ -1114,41 +1131,29 @@ export class TelegramBot {
       `[telegram] dm pairing bound telegram_user=${String(input.from.id)} (@${input.from.username ?? 'no-username'}) → harness=${pending.harnessIdentityId} (${pending.harnessIdentityLabel})`,
     );
 
-    await this.api.sendMessage({
-      chat_id: input.chat.id,
-      text: [
-        '<b>Verbunden!</b>',
+    await this.emitter.sendSystem(
+      input.chat.id,
+      [
+        'Verbunden!',
         '',
-        `Du bist jetzt mit dem byte5 Harness verbunden als <b>${escapeHtml(pending.harnessIdentityLabel)}</b>.`,
+        `Du bist jetzt mit dem byte5 Harness verbunden als ${pending.harnessIdentityLabel}.`,
         '',
         'Stell mir einfach eine Frage — ich antworte direkt.',
       ].join('\n'),
-      parse_mode: 'HTML',
-    });
+    );
   }
 
+  /**
+   * Buttons on messages sent by an older version of this channel can still be
+   * tapped. This version sends none (no declared decoration, spec §5.14), so
+   * the tap is only acknowledged and the user is told to answer in text.
+   */
   private async handleCallbackQuery(
     cb: TelegramCallbackQuery,
   ): Promise<void> {
-    if (!cb.message) {
-      await this.api.answerCallbackQuery({ callback_query_id: cb.id });
-      return;
-    }
-    const pending = this.renderer.takePendingCallback(
-      cb.message.chat.id,
-      cb.data,
-    );
-    // Acknowledge immediately so Telegram stops the loading spinner — even
-    // if the token has already expired.
     await this.api.answerCallbackQuery({
       callback_query_id: cb.id,
-      ...(pending ? {} : { text: 'Diese Auswahl ist abgelaufen.' }),
-    });
-    if (!pending) return;
-    await this.runTurn({
-      chat: cb.message.chat,
-      from: cb.from,
-      userMessage: pending.echo,
+      text: 'Diese Auswahl gibt es nicht mehr. Antworte bitte mit einer Nachricht.',
     });
   }
 
@@ -1246,15 +1251,22 @@ export class TelegramBot {
           return;
         }
 
-        await this.renderer.renderAnswer(input.chat.id, result);
+        await this.emitter.sendAnswer(input.chat.id, result);
+        this.pendingReplies.remember(
+          pendingReplyKey(input.chat.id, input.from?.id),
+          result.interactive,
+        );
 
         // History append skipped for blocking `ask_user_choice` / slot-picker
         // turns — the "answer" there is a clarification prompt, not a real
-        // response. Post-S+7.5: both are discriminated via `interactive.kind`.
+        // response — and for management-layer notices (`/agent Mira`,
+        // "agent unavailable"), which are not part of the conversation with
+        // the agent. Post-S+7.5: both are discriminated via `interactive.kind`.
         const isBlockingInteractive =
           result.interactive?.kind === 'choice' ||
           result.interactive?.kind === 'slots';
-        if (!isBlockingInteractive) {
+        const isSystemNotice = result.speaker?.kind === 'system';
+        if (!isBlockingInteractive && !isSystemNotice) {
           this.history.append(sessionScope, {
             userMessage: input.userMessage,
             assistantAnswer: result.text,
@@ -1269,7 +1281,7 @@ export class TelegramBot {
       } catch (err) {
         console.error('[telegram] orchestrator failure:', err);
         const detail = err instanceof Error ? err.message : String(err);
-        await this.renderer.renderError(input.chat.id, detail);
+        await this.emitter.sendSystem(input.chat.id, failureNoticeText(detail));
       } finally {
         stopTyping();
       }
