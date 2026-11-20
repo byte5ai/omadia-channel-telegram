@@ -26,9 +26,10 @@ import express, { Router } from 'express';
 import type { PluginContext, MemoryStore } from '@omadia/plugin-api';
 import {
   CHANNEL_RESOLVER_SERVICE,
+  resolveChannelRoute,
   InMemoryConversationHistoryStore,
-  type ChannelBindingResolver,
   type ChannelHandle,
+  type ConversationMessageEvent,
   type CoreApi,
 } from '@omadia/channel-sdk';
 import type { ChatAgentBundle } from '@omadia/orchestrator';
@@ -41,8 +42,16 @@ import { PairingStore } from './pairingStore.js';
 import { PairingTokenRegistry } from './pairingTokens.js';
 import { TelegramRosterProvider } from './telegramRoster.js';
 import { GroupMemberTracker } from './groupMemberTracker.js';
+import { registerBotCommands } from './botCommands.js';
+import { TelegramConversationRosterProvider } from './conversationRoster.js';
+import { PersistentSpeakerHistoryStore } from './speakerHistory.js';
+import type { ChannelRouteLookup } from './agentResolution.js';
+import { TelegramConversationMessages } from './conversationMessages.js';
+import { createTelegramConversationSend, createTelegramTargetedSend } from './telegramSend.js';
+import { TelegramEmitter } from './telegramEmitter.js';
 import {
   TELEGRAM_ALLOWED_UPDATES,
+  TELEGRAM_CHANNEL_TYPE,
   TelegramApiClient,
   TelegramBot,
   type TelegramUpdate,
@@ -149,30 +158,86 @@ export async function activate(
   const pairingStore = new PairingStore(memoryStore);
   core.log('info', 'telegram pairing store ready (memoryStore-backed)');
 
-  // --- Per-turn Agent resolution (US7) ---------------------------------
-  // Late-resolved channelResolver@1: when the multi-orchestrator registry is
-  // active AND the operator bound this Telegram bot (or a specific chat) to an
-  // Agent in /operator/channels, each inbound turn routes to that scoped
-  // Agent. Without the resolver service the bot falls back to the default
-  // chatAgent@1 (the `chatAgent` constant captured above).
-  const channelResolver = ctx.services.get<ChannelBindingResolver>(
-    CHANNEL_RESOLVER_SERVICE,
-  );
-  const resolveChatAgentForActivity = channelResolver
-    ? (input: { channelType: 'telegram'; channelKey: string }) =>
-        channelResolver.resolve(input.channelType, input.channelKey)
-    : undefined;
+  // The room's membership for the kernel's audience floor (spec 2042 §5.11).
+  // Honest by construction: `complete` only when proven, `partial` when only
+  // administrators and seen members are known. Feature-detected: older
+  // kernels have no roster registry.
+  if (typeof core.registerRosterProvider === 'function') {
+    core.registerRosterProvider(
+      ctx.agentId,
+      new TelegramConversationRosterProvider({
+        roster: rosterProvider,
+        pairingStore,
+        bot: { id: me.id, username: me.username ?? '' },
+      }),
+    );
+    core.log('info', 'telegram conversation roster registered with the kernel');
+  } else {
+    core.log('info', 'kernel has no roster registry — conversation roster not registered');
+  }
+
+  // Native "/" menu: /agent, /agents. The agent behind the resolver carries
+  // them out; the channel passes the text on unchanged.
+  await registerBotCommands(api, (level, message) => core.log(level, message));
+
+  // Who spoke in which chat, persisted, drives the plain name line (INV-4).
+  const speakerHistory = new PersistentSpeakerHistoryStore(memoryStore);
+
+  // --- Per-turn agent resolution (S1 contract) --------------------------
+  // The SDK's `resolveChannelRoute` asks `channelResolver@1` on every turn:
+  // `bound` (agent plus speaker) or `reject` (agent for `/agent`, plus the
+  // notice). It returns `undefined` on a host without the registry, and only
+  // then does a turn go to the default chatAgent@1. With a registry that
+  // singleton is a refuser and is never a fallback.
+  const channelRoute: ChannelRouteLookup = (channelType, channelKey, context) =>
+    resolveChannelRoute(ctx, channelType, channelKey, context);
   core.log(
     'info',
-    resolveChatAgentForActivity
-      ? 'Telegram per-turn Agent resolution active via channelResolver@1'
-      : 'channelResolver@1 not published — Telegram routes all turns to default chatAgent',
+    ctx.services.get(CHANNEL_RESOLVER_SERVICE)
+      ? 'Telegram per-turn agent resolution active via channelResolver@1'
+      : 'channelResolver@1 not published — Telegram routes all turns to the default chatAgent (host without registry)',
   );
+
+  // --- Posting for agents and collecting answers (spec 2042 criterion 30) ---
+  // Optional kernel seams, feature-detected: older kernels keep activating.
+  // Inbound events need both the emitter and the subscription lookup.
+  const botUsername = me.username ?? '';
+  const emitConversationMessage = core.emitConversationMessage?.bind(core);
+  const isAllMessagesSubscribed = core.isAllMessagesSubscribed?.bind(core);
+  const conversationDelivery = core.conversationDelivery?.bind(core);
+  // The kernel's verdict on a message the channel would start a turn for.
+  const reportConversationMessage = core.reportConversationMessage?.bind(core);
+  const conversationMessages =
+    emitConversationMessage && isAllMessagesSubscribed && botUsername
+      ? new TelegramConversationMessages(
+          {
+            isAllMessagesSubscribed: (conversationId, channelKey) =>
+              isAllMessagesSubscribed(TELEGRAM_CHANNEL_TYPE, conversationId, channelKey),
+            ...(conversationDelivery
+              ? {
+                  conversationDelivery: (conversationId: string, channelKey: string) =>
+                    conversationDelivery(TELEGRAM_CHANNEL_TYPE, conversationId, channelKey),
+                }
+              : {}),
+            // The catalog id is authoritative here; the adapter cannot know it.
+            emit: (event) =>
+              emitConversationMessage({ ...event, channelId: ctx.agentId, channelType: TELEGRAM_CHANNEL_TYPE }),
+            ...(reportConversationMessage
+              ? {
+                  report: (event: ConversationMessageEvent) =>
+                    reportConversationMessage({ ...event, channelId: ctx.agentId, channelType: TELEGRAM_CHANNEL_TYPE }),
+                }
+              : {}),
+          },
+          botUsername,
+        )
+      : undefined;
 
   const bot = new TelegramBot({
     api,
     chatAgent,
-    ...(resolveChatAgentForActivity ? { resolveChatAgentForActivity } : {}),
+    channelResolver: channelRoute,
+    ...(conversationMessages ? { conversationMessages } : {}),
     history: conversationHistoryStore,
     turnContext,
     rosterProvider: (chatId) => rosterProvider.forChat(chatId),
@@ -180,6 +245,7 @@ export async function activate(
     invalidateRoster: (chatId) => rosterProvider.invalidate(chatId),
     pairingStore,
     pairingTokens,
+    speakerHistory,
     dmPolicy,
     // S+7.7+: identity drives the in-group mention/reply filter (so the
     // bot only answers when explicitly addressed once privacy-mode is
@@ -187,6 +253,23 @@ export async function activate(
     // matching via text_mention entities + reply detection.
     botIdentity: { id: me.id, username: me.username ?? '' },
   });
+
+  if (core.registerConversationSendProvider || core.registerTargetedSendProvider) {
+    const sendDeps = {
+      emitter: new TelegramEmitter({ api, speakerHistory }),
+      pairingStore,
+      dmPolicy,
+      botUsername,
+    };
+    core.registerConversationSendProvider?.(ctx.agentId, createTelegramConversationSend(sendDeps));
+    core.registerTargetedSendProvider?.(ctx.agentId, createTelegramTargetedSend(sendDeps));
+    core.log(
+      'info',
+      `telegram send providers registered (own-identity posts as @${botUsername || '<unknown>'}; polls and cards are posted as text by the kernel)`,
+    );
+  } else {
+    core.log('info', 'kernel has no send providers — agents cannot post through Telegram');
+  }
 
   // Mount the webhook router unconditionally — even when running in LP
   // mode, a future operator update can flip TELEGRAM_PUBLIC_BASE_URL +

@@ -1,18 +1,16 @@
 /**
  * Telegram channel adapter. Speaks the Bot API directly via fetch — no
  * third-party SDK. Handles the inbound Update envelope (message +
- * callback_query) and drives the orchestrator; outgoing wire-format
- * rendering (MarkdownV2, inline keyboards, callback_data tokenisation)
- * lives in telegramRenderer.ts.
+ * callback_query) and drives the orchestrator; every outgoing message leaves
+ * through telegramEmitter.ts.
  *
  * Scope (v1):
- * - Text messages → ChatAgent.chat → renderer.renderAnswer(...)
- * - Inline-keyboard interactives via renderer
+ * - Text messages → ChatAgent.chat → emitter.sendAnswer(...) (plain text via
+ *   the SDK renderer; no buttons, reactions or footers — see telegramEmitter.ts)
+ * - Choice / slot questions as numbered text; the typed number or label is
+ *   turned back into the value (pendingReplies.ts)
  * - Group rosters via getChatAdministrators (best-effort; non-admin members
  *   stay invisible — Bot API gives no public membership listing)
- * - Pending-callback resolution: renderer.takePendingCallback resolves the
- *   token into the stashed echo string, which is fed back as the next user
- *   message
  *
  * Out of scope (deferred):
  * - SSO / OBO (no Telegram equivalent of Bot-Framework userTokenClient)
@@ -25,10 +23,18 @@ import {
   formatSessionScope,
   isNoReply,
   logNoReplyDrop,
-  makePrincipal,
+  DEFAULT_PACE_PROFILE,
+  InMemorySpeakerHistoryStore,
+  channelUserPrincipal,
+  parsePrincipal,
+  runPacedTurn,
+  turnPrincipal,
+  type ChannelPaceProfile,
+  type PaceClock,
   unsharedConversationScope,
   type ScopeId,
 } from '@omadia/channel-sdk';
+import { resolveAgentForTurn, type ChannelRouteLookup } from './agentResolution.js';
 import { evaluateDmPolicy, type DmPolicy } from './dmPolicyGuard.js';
 import type {
   ChatAgent,
@@ -40,11 +46,14 @@ import type {
 import type { PairingStore } from './pairingStore.js';
 import type { GroupMemberTracker } from './groupMemberTracker.js';
 import type { PairingTokenRegistry } from './pairingTokens.js';
-import { escapeHtml } from './markdownToHtml.js';
 import {
-  TelegramRenderer,
-  type InlineKeyboardMarkup,
-} from './telegramRenderer.js';
+  failureNoticeText,
+  TelegramEmitter,
+  type EmissionRecord,
+  type SpeakerHistoryReader,
+} from './telegramEmitter.js';
+import { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
+import type { TelegramConversationMessages } from './conversationMessages.js';
 
 // ---------------------------------------------------------------------------
 // Bot API envelope — narrow shapes for the fields we read
@@ -243,6 +252,11 @@ export function telegramTurnOrigin(args: {
   readonly chatType: TelegramChat['type'];
   readonly conversationScope: ScopeId;
   readonly fromId?: number;
+  readonly fromDisplayName?: string;
+  /** The Bot API chat id: the conversation id subscriptions and posts use. */
+  readonly chatId?: number;
+  /** The Bot API `message_id` this turn answers. */
+  readonly messageId?: number;
 }): TurnOriginShim {
   const isPrivate = args.chatType === 'private';
   const scope: ScopeId =
@@ -250,21 +264,33 @@ export function telegramTurnOrigin(args: {
       ? { kind: 'personal', userId: String(args.fromId) }
       : args.conversationScope;
 
-  // Carried for audit and for the promote action's actor — never for the axis
-  // derivation, which reads the scope alone so the two cannot disagree. The
-  // principal keeps the `telegram:<id>` spelling that `ChatTurnInput.userId` and
-  // the pairing store already use, so an audit row can be matched back to a
-  // binding without a second translation table.
-  const principal =
-    args.fromId === undefined
-      ? undefined
-      : makePrincipal('user', `${TELEGRAM_CHANNEL_TYPE}:${String(args.fromId)}`);
+  // The sender as a principal, in the one form every channel uses
+  // (`channelUserPrincipal`, S1 contract): `user:telegram-chat:<id>`. Never
+  // built here: selections and availability are keyed by exactly this string.
+  // Carried for audit, routing and the promote action's actor — never for the
+  // axis derivation, which reads the scope alone so the two cannot disagree.
+  const userRef = args.fromId === undefined ? undefined : telegramUserRef(args.fromId, args.fromDisplayName);
+  const principal = userRef ? parsePrincipal(channelUserPrincipal(userRef)) : undefined;
+  const conversationType =
+    isPrivate ? 'direct' : args.chatType === 'group' || args.chatType === 'supergroup' ? 'group' : undefined;
 
   return {
     channelType: TELEGRAM_CHANNEL_TYPE,
     scope,
     ...(principal ? { principal } : {}),
+    ...(conversationType ? { conversationType } : {}),
+    ...(args.chatId !== undefined ? { channelConversationId: String(args.chatId) } : {}),
+    ...(args.messageId !== undefined ? { messageId: String(args.messageId) } : {}),
+    ...(userRef ? { speaker: { kind: userRef.kind, id: userRef.id, ...(userRef.displayName ? { displayName: userRef.displayName } : {}) } } : {}),
   };
+}
+
+/** Telegram's `from` as the SDK's channel user. Telegram verifies no e-mail. */
+export function telegramUserRef(
+  fromId: number,
+  displayName?: string,
+): { readonly kind: 'telegram-chat'; readonly id: string; readonly displayName?: string } {
+  return { kind: 'telegram-chat', id: String(fromId), ...(displayName ? { displayName } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -282,7 +308,6 @@ export class TelegramApiClient {
     chat_id: number;
     text: string;
     parse_mode?: 'MarkdownV2' | 'HTML';
-    reply_markup?: InlineKeyboardMarkup;
     disable_web_page_preview?: boolean;
   }): Promise<TelegramMessage> {
     return await this.call<TelegramMessage>('sendMessage', params);
@@ -311,6 +336,17 @@ export class TelegramApiClient {
     action: 'typing' | 'upload_photo' | 'upload_document';
   }): Promise<true> {
     return await this.call<true>('sendChatAction', params);
+  }
+
+  /**
+   * Register the bot's native command menu (the "/" suggestions). Replaces
+   * the list of the given scope and language.
+   */
+  async setMyCommands(params: {
+    commands: ReadonlyArray<{ command: string; description: string }>;
+    language_code?: string;
+  }): Promise<true> {
+    return await this.call<true>('setMyCommands', params);
   }
 
   async answerCallbackQuery(params: {
@@ -443,8 +479,21 @@ export interface TelegramBotOptions {
   memberTracker?: GroupMemberTracker;
   /** Drops a chat's cached roster after a membership change. */
   invalidateRoster?: (chatId: number) => void;
-  /** Per-chat lock to serialise concurrent callback_query + message turns. */
-  pendingCallbackTtlMs?: number;
+  /** How long a numbered question stays answerable by number or label. */
+  pendingReplyTtlMs?: number;
+  /**
+   * Who spoke in which chat (drives the plain name line, INV-4). Defaults to
+   * a process-local store; the plugin passes a persistent one.
+   */
+  speakerHistory?: SpeakerHistoryReader;
+  /** Inbound events for native facilitators and card answers; feature-detected in plugin.ts. */
+  conversationMessages?: TelegramConversationMessages;
+  /** Pace profile; default: SDK acknowledgement threshold, typing renewed every 4 s. */
+  paceProfile?: ChannelPaceProfile;
+  /** Timer seam for tests. */
+  paceClock?: PaceClock;
+  /** Called for every message sent, with its speaker. Tests and audit. */
+  onEmit?: (record: EmissionRecord) => void;
   /** Pairing infrastructure (S+7.6). Both required for /start <token> to work. */
   pairingStore: PairingStore;
   pairingTokens: PairingTokenRegistry;
@@ -459,28 +508,45 @@ export interface TelegramBotOptions {
    */
   botIdentity: { id: number; username: string };
   /**
-   * US7 per-turn Agent resolution. Given a `(channelType, channelKey)` the
-   * kernel's `channelResolver@1` reports which Agent owns the binding. The bot
-   * tries the chat id first (a chat-scoped binding), then the bot username
-   * (the bot-level catch-all); on a `'bound'` decision it routes the turn to
-   * that scoped Agent, otherwise it accepts the platform `'fallback'` Agent,
-   * otherwise the default `chatAgent`. Unset (no multi-orchestrator registry /
-   * pre-Phase-A boot) → every turn uses the default agent, exactly as before.
-   *
-   * Wired in `plugin.ts` from the `channelResolver@1` service; errors are
-   * swallowed by the bot (logged, default agent used) so a resolver hiccup
-   * never drops a turn.
+   * Per-turn agent resolution: the SDK's `resolveChannelRoute` over the kernel's
+   * `channelResolver@1`, called on every turn (see `agentResolution.ts`). The bot
+   * probes the chat id, then `@<bot_username>`, then the bare username. Only a
+   * host WITHOUT a resolver (the lookup returns `undefined`) uses `chatAgent`.
    */
-  resolveChatAgentForActivity?: (input: {
-    readonly channelType: 'telegram';
-    readonly channelKey: string;
-  }) => {
-    readonly decision: 'bound' | 'fallback' | 'reject';
-    readonly chatAgent?: ChatAgent;
-  };
+  channelResolver?: ChannelRouteLookup;
 }
 
-const DEFAULT_CALLBACK_TTL_MS = 10 * 60 * 1000; // 10 min
+/** Telegram keeps the "typing…" state for about 5 s, so renew it every 4 s. No reply window. */
+export const TELEGRAM_PACE_PROFILE: ChannelPaceProfile = Object.freeze({
+  ...DEFAULT_PACE_PROFILE,
+  typingIntervalMs: 4_000,
+});
+
+/** The notice for a turn nobody answers when the kernel gave no notice of its own. */
+const NO_AGENT_TEXT = 'Für diese Unterhaltung ist kein Agent eingerichtet.';
+
+/** The notice when the resolver failed: no agent is guessed, the turn is not answered. */
+const ROUTING_UNAVAILABLE_TEXT =
+  'Ich kann gerade nicht klären, welcher Agent hier antwortet. Bitte versuch es gleich nochmal.';
+
+/**
+ * The language of kernel notices and of the pace acknowledgement: English for
+ * clients set to English, otherwise German (the channel's own texts are German).
+ */
+function localeOf(from: TelegramUser | undefined): 'de' | 'en' {
+  return /^en\b/i.test(from?.language_code ?? '') ? 'en' : 'de';
+}
+
+/**
+ * The agent commands Telegram clients send WITHOUT the `@Bot` suffix in a
+ * group where only one bot knows the command. The addressing filter lets them
+ * through: requiring the suffix would make `/agent` from the "/" menu dead in
+ * the common single-bot group. With several bots in a group the client adds
+ * the suffix itself (a command for another bot is still ignored) and, with
+ * BotFather privacy mode on, Telegram delivers a bare command only to the bot
+ * that spoke last. Other commands without a suffix stay ignored.
+ */
+const AGENT_COMMANDS: ReadonlySet<string> = new Set(['/agent', '/agents']);
 
 export class TelegramBot {
   private readonly api: TelegramApiClient;
@@ -492,21 +558,16 @@ export class TelegramBot {
     | undefined;
   private readonly memberTracker: GroupMemberTracker | undefined;
   private readonly invalidateRoster: ((chatId: number) => void) | undefined;
-  private readonly renderer: TelegramRenderer;
+  private readonly emitter: TelegramEmitter;
+  private readonly paceProfile: ChannelPaceProfile;
+  private readonly paceClock: PaceClock | undefined;
+  private readonly pendingReplies: PendingReplyStore;
   private readonly pairingStore: PairingStore;
   private readonly pairingTokens: PairingTokenRegistry;
   private readonly dmPolicy: DmPolicy;
   private readonly botIdentity: { id: number; username: string };
-  private readonly resolveChatAgentForActivity?: TelegramBotOptions['resolveChatAgentForActivity'];
-  /**
-   * Per-turn resolved ChatAgent for the current {@link runTurn}. Set once at
-   * the top of the turn from {@link resolveChatAgentForActivity} (or left
-   * undefined → the default `chatAgent`); read at the chat invocation. Per-turn
-   * scope means concurrent turns won't trample each other under normal load
-   * (one event-loop tick per webhook delivery).
-   */
-  private currentChatAgent: ChatAgent | undefined;
-
+  private readonly channelResolver?: ChannelRouteLookup;
+  private readonly conversationMessages?: TelegramConversationMessages;
   constructor(opts: TelegramBotOptions) {
     this.api = opts.api;
     this.chatAgent = opts.chatAgent;
@@ -515,63 +576,20 @@ export class TelegramBot {
     this.rosterProviderFactory = opts.rosterProvider;
     this.memberTracker = opts.memberTracker;
     this.invalidateRoster = opts.invalidateRoster;
-    this.renderer = new TelegramRenderer(
-      this.api,
-      opts.pendingCallbackTtlMs ?? DEFAULT_CALLBACK_TTL_MS,
-    );
+    this.emitter = new TelegramEmitter({
+      api: this.api,
+      speakerHistory: opts.speakerHistory ?? new InMemorySpeakerHistoryStore(),
+      ...(opts.onEmit ? { onEmit: opts.onEmit } : {}),
+    });
+    this.pendingReplies = new PendingReplyStore(opts.pendingReplyTtlMs);
+    this.paceProfile = opts.paceProfile ?? TELEGRAM_PACE_PROFILE;
+    this.paceClock = opts.paceClock;
     this.pairingStore = opts.pairingStore;
     this.pairingTokens = opts.pairingTokens;
     this.dmPolicy = opts.dmPolicy ?? 'pairing';
     this.botIdentity = opts.botIdentity;
-    this.resolveChatAgentForActivity = opts.resolveChatAgentForActivity;
-  }
-
-  /**
-   * US7 — pick the ChatAgent the operator bound to this turn's channel, set on
-   * {@link currentChatAgent} for the rest of the turn so a binding edit
-   * mid-turn never swaps the agent under it. Called once at the top of
-   * {@link runTurn}.
-   *
-   * Key candidates, most-specific first:
-   *   1. the numeric chat id (a chat-scoped binding), then
-   *   2. `@<bot_username>` and the bare `<bot_username>` (the bot-level
-   *      catch-all the operator binds in `channel_bindings`).
-   * These are the key formats the SDK documents for Telegram, so what the
-   * operator binds IS what the resolver matches at runtime.
-   */
-  private resolveChatAgentForTurn(chat: TelegramChat): void {
-    this.currentChatAgent = undefined;
-    if (!this.resolveChatAgentForActivity) return;
-
-    const keysToTry: string[] = [String(chat.id)];
-    const username = this.botIdentity.username;
-    if (username) keysToTry.push(`@${username}`, username);
-
-    let fallbackCandidate: ChatAgent | undefined;
-    try {
-      for (const channelKey of keysToTry) {
-        const decision = this.resolveChatAgentForActivity({
-          channelType: 'telegram',
-          channelKey,
-        });
-        if (decision.decision === 'bound' && decision.chatAgent) {
-          this.currentChatAgent = decision.chatAgent;
-          return;
-        }
-        if (decision.decision === 'fallback' && decision.chatAgent) {
-          // Remember the platform fallback but keep checking less-specific
-          // keys — the bot username might still be explicitly bound.
-          fallbackCandidate ??= decision.chatAgent;
-        }
-      }
-      this.currentChatAgent = fallbackCandidate;
-    } catch (err) {
-      console.error(
-        `[telegram] channelResolver threw (chat=${String(chat.id)}) — falling back to default agent:`,
-        err,
-      );
-      this.currentChatAgent = undefined;
-    }
+    if (opts.channelResolver) this.channelResolver = opts.channelResolver;
+    if (opts.conversationMessages) this.conversationMessages = opts.conversationMessages;
   }
 
   /** Single entry-point — dispatches on update.message / callback_query / my_chat_member. */
@@ -663,15 +681,10 @@ export class TelegramBot {
     // without a prior /start, since the user has chatted with the bot
     // before (via the pairing flow).
     try {
-      await this.api.sendMessage({
-        chat_id: upd.from.id,
-        text: [
-          '<b>Gruppe aktiviert</b>',
-          '',
-          `Der byte5 Harness Bot ist jetzt freigeschaltet in der Gruppe „${escapeHtml(activation.chatTitle)}“. Schreib mich dort einfach an (mit @-Mention wenn der Privacy-Mode aktiv ist).`,
-        ].join('\n'),
-        parse_mode: 'HTML',
-      });
+      await this.emitter.sendSystem(
+        upd.from.id,
+        `Gruppe aktiviert: Der byte5 Harness Bot ist jetzt freigeschaltet in der Gruppe „${activation.chatTitle}“. Schreib mich dort einfach an (mit @-Mention wenn der Privacy-Mode aktiv ist).`,
+      );
     } catch (err) {
       console.warn(
         `[telegram] DM-confirm to harness=${adderBinding.harnessIdentityId} failed: ${err instanceof Error ? err.message : String(err)} (group still activated)`,
@@ -738,10 +751,10 @@ export class TelegramBot {
     const rawText = message.text?.trim() ?? message.caption?.trim() ?? '';
     if (!rawText && inboundImages.length === 0) {
       // Truly empty: stickers, voice, video without caption — out of scope.
-      await this.api.sendMessage({
-        chat_id: message.chat.id,
-        text: 'Ich kann derzeit nur Text-Nachrichten und Bilder verarbeiten.',
-      });
+      await this.emitter.sendSystem(
+        message.chat.id,
+        'Ich kann derzeit nur Text-Nachrichten und Bilder verarbeiten.',
+      );
       return;
     }
     // For images without caption, give the orchestrator a generic
@@ -779,11 +792,7 @@ export class TelegramBot {
       });
       if (!decision.allow) {
         if (decision.refusal) {
-          await this.api.sendMessage({
-            chat_id: message.chat.id,
-            text: decision.refusal,
-            parse_mode: 'HTML',
-          });
+          await this.emitter.sendSystem(message.chat.id, decision.refusal);
         }
         // disabled-mode: silent — log a marker so operators can audit
         console.log(
@@ -817,7 +826,11 @@ export class TelegramBot {
       // every group message reaches the bot and would echo back). Even
       // with privacy-on this filter is a safe defense against legacy-
       // group server-side delivery quirks.
-      if (!this.isBotAddressedInGroup(message)) {
+      const isAddressed = this.isBotAddressedInGroup(message);
+      // The record for a facilitation the kernel subscribed to comes before the
+      // mention gate: it concerns messages that need not mention the bot.
+      if (await this.handleInboundForEngine(message, isAddressed)) return;
+      if (!isAddressed) {
         console.log(
           `[telegram] group message ignored chat=${String(message.chat.id)} — not addressed (no @-mention, no reply, no /cmd@bot)`,
         );
@@ -832,14 +845,60 @@ export class TelegramBot {
           ? message.entities
           : message.caption_entities;
       userMessage = this.stripBotMention(text, stripEntities);
+    } else if (await this.handleInboundForEngine(message, true)) {
+      return;
     }
+
+    // A typed number or label answers the question the agent just asked
+    // (plain-text parity for choice cards, spec §5.14).
+    userMessage = this.pendingReplies.resolve(
+      pendingReplyKey(message.chat.id, message.from?.id),
+      userMessage,
+    );
 
     await this.runTurn({
       chat: message.chat,
       from: message.from,
+      messageId: message.message_id,
       userMessage,
       attachments: inboundImages,
     });
+  }
+
+  /**
+   * The inbound path that is not a turn (spec 2042 criterion 30): a message of
+   * a conversation the kernel subscribed an agent to (`all`: the engine drives,
+   * the adapter starts no turn; `addressed`: what addresses the bot is
+   * recorded and the ordinary turn still runs). The kernel matches a typed
+   * answer to a question it posted as text by this event (`replyToMessageId`,
+   * `addressedToBot`), so the bot has no card code of its own.
+   *
+   * Returns true when the message is consumed and no turn must start.
+   */
+  private async handleInboundForEngine(message: TelegramMessage, isAddressed: boolean): Promise<boolean> {
+    const messages = this.conversationMessages;
+    if (!messages) return false;
+    const mode = messages.delivery(message.chat.id);
+    if (mode === 'none') return false;
+    // The bot's own mention is not part of what the person said.
+    const entities = message.text != null ? message.entities : message.caption_entities;
+    const said = this.stripBotMention((message.text ?? message.caption ?? '').trim(), entities);
+    // `all`: the engine drives, the adapter starts no turn.
+    if (mode === 'all') {
+      const isRecorded = messages.emitCreated(message, mode, isAddressed, said);
+      console.log(
+        `[telegram] recorded for the engine, no turn chat=${String(message.chat.id)} recorded=${String(isRecorded)}`,
+      );
+      return true;
+    }
+    // `addressed`: the turn would run, so the kernel is asked first whether it
+    // consumed the message as the typed answer to an open question ("2" to a
+    // poll). If so there is no turn: no acknowledgement, no agent answer.
+    const isAnswer = await messages.reportCreated(message, mode, isAddressed, said);
+    if (isAnswer) {
+      console.log(`[telegram] consumed as an answer to an open question, no turn chat=${String(message.chat.id)}`);
+    }
+    return isAnswer;
   }
 
   /**
@@ -1019,7 +1078,9 @@ export class TelegramBot {
             entity.offset,
             entity.offset + entity.length,
           );
-          if (cmd.toLowerCase().endsWith(expected)) return true;
+          const command = cmd.toLowerCase();
+          if (command.endsWith(expected)) return true;
+          if (entity.offset === 0 && AGENT_COMMANDS.has(command)) return true;
         }
       }
     }
@@ -1069,27 +1130,27 @@ export class TelegramBot {
       // Telegram always populates `from` for private-chat messages; if it
       // doesn't, the update is malformed. Refuse silently with a generic
       // hint so we don't leak the pairing mechanism.
-      await this.api.sendMessage({
-        chat_id: input.chat.id,
-        text: 'Ich konnte deinen Telegram-Account nicht erkennen.',
-      });
+      await this.emitter.sendSystem(
+        input.chat.id,
+        'Ich konnte deinen Telegram-Account nicht erkennen.',
+      );
       return;
     }
     if (input.token.length === 0) {
       // Bare /start with no token = first-time-greeting flow, not pairing.
-      await this.api.sendMessage({
-        chat_id: input.chat.id,
-        text: 'Hi! Ich bin der byte5 Harness Bot. Du kannst mich Sachen über deine Daten fragen.',
-      });
+      await this.emitter.sendSystem(
+        input.chat.id,
+        'Hi! Ich bin der byte5 Harness Bot. Du kannst mich Sachen über deine Daten fragen.',
+      );
       return;
     }
 
     const pending = this.pairingTokens.consume(input.token);
     if (!pending) {
-      await this.api.sendMessage({
-        chat_id: input.chat.id,
-        text: 'Dieser Pairing-Link ist abgelaufen oder bereits verwendet. Bitte lass dir vom Operator einen neuen Link generieren.',
-      });
+      await this.emitter.sendSystem(
+        input.chat.id,
+        'Dieser Pairing-Link ist abgelaufen oder bereits verwendet. Bitte lass dir vom Operator einen neuen Link generieren.',
+      );
       return;
     }
 
@@ -1114,47 +1175,36 @@ export class TelegramBot {
       `[telegram] dm pairing bound telegram_user=${String(input.from.id)} (@${input.from.username ?? 'no-username'}) → harness=${pending.harnessIdentityId} (${pending.harnessIdentityLabel})`,
     );
 
-    await this.api.sendMessage({
-      chat_id: input.chat.id,
-      text: [
-        '<b>Verbunden!</b>',
+    await this.emitter.sendSystem(
+      input.chat.id,
+      [
+        'Verbunden!',
         '',
-        `Du bist jetzt mit dem byte5 Harness verbunden als <b>${escapeHtml(pending.harnessIdentityLabel)}</b>.`,
+        `Du bist jetzt mit dem byte5 Harness verbunden als ${pending.harnessIdentityLabel}.`,
         '',
         'Stell mir einfach eine Frage — ich antworte direkt.',
       ].join('\n'),
-      parse_mode: 'HTML',
-    });
+    );
   }
 
+  /**
+   * Buttons on messages sent by an older version of this channel can still be
+   * tapped. This version sends none (no declared decoration, spec §5.14), so
+   * the tap is only acknowledged and the user is told to answer in text.
+   */
   private async handleCallbackQuery(
     cb: TelegramCallbackQuery,
   ): Promise<void> {
-    if (!cb.message) {
-      await this.api.answerCallbackQuery({ callback_query_id: cb.id });
-      return;
-    }
-    const pending = this.renderer.takePendingCallback(
-      cb.message.chat.id,
-      cb.data,
-    );
-    // Acknowledge immediately so Telegram stops the loading spinner — even
-    // if the token has already expired.
     await this.api.answerCallbackQuery({
       callback_query_id: cb.id,
-      ...(pending ? {} : { text: 'Diese Auswahl ist abgelaufen.' }),
-    });
-    if (!pending) return;
-    await this.runTurn({
-      chat: cb.message.chat,
-      from: cb.from,
-      userMessage: pending.echo,
+      text: 'Diese Auswahl gibt es nicht mehr. Antworte bitte mit einer Nachricht.',
     });
   }
 
   private async runTurn(input: {
     chat: TelegramChat;
     from?: TelegramUser;
+    messageId?: number;
     userMessage: string;
     attachments?: Array<{
       kind: 'image' | 'file' | 'audio' | 'video';
@@ -1185,6 +1235,8 @@ export class TelegramBot {
       scope: `telegram:${String(input.chat.id)}`,
     });
     const sessionScope = formatSessionScope(conversationScope);
+    // Not a principal: the user key of traces and the pairing store, kept in
+    // its historic spelling so no history splits. Routing uses `turnPrincipal`.
     const userId = input.from
       ? `telegram:${String(input.from.id)}`
       : undefined;
@@ -1195,12 +1247,39 @@ export class TelegramBot {
     const origin = telegramTurnOrigin({
       chatType: input.chat.type,
       conversationScope,
-      ...(input.from ? { fromId: input.from.id } : {}),
+      chatId: input.chat.id,
+      ...(input.messageId !== undefined ? { messageId: input.messageId } : {}),
+      ...(input.from ? { fromId: input.from.id, fromDisplayName: telegramDisplayName(input.from) } : {}),
     });
 
-    // US7 — resolve the Agent bound to this chat/bot for the whole turn.
-    this.resolveChatAgentForTurn(input.chat);
-    const chatAgent = this.currentChatAgent ?? this.chatAgent;
+    // Which agent answers is the kernel's decision (S1 contract): `bound` with
+    // the speaker known up front, or `reject` with a notice. The sender is
+    // routed by the SDK's principal form, the same string the origin carries.
+    const locale = localeOf(input.from);
+    const resolution = resolveAgentForTurn(
+      this.channelResolver,
+      [String(input.chat.id), this.botIdentity.username ? `@${this.botIdentity.username}` : undefined, this.botIdentity.username || undefined],
+      this.chatAgent,
+      {
+        locale,
+        ...(input.from ? { principal: turnPrincipal(telegramUserRef(input.from.id), origin.principal) } : {}),
+      },
+      (err) =>
+        console.error(
+          `[telegram] channelResolver threw (chat=${String(input.chat.id)}) — turn not answered:`,
+          err,
+        ),
+    );
+    if (resolution.kind === 'unavailable') {
+      await this.emitter.sendSystem(input.chat.id, ROUTING_UNAVAILABLE_TEXT);
+      return;
+    }
+    if (resolution.kind === 'refused' && !resolution.agent) {
+      await this.emitter.sendSystem(input.chat.id, resolution.notice?.text ?? NO_AGENT_TEXT);
+      return;
+    }
+    const chatAgent = resolution.agent as ChatAgent;
+    const announcedSpeaker = resolution.kind === 'agent' ? resolution.speaker : undefined;
 
     const isGroup =
       input.chat.type === 'group' || input.chat.type === 'supergroup';
@@ -1209,7 +1288,6 @@ export class TelegramBot {
         ? await this.rosterProviderFactory(input.chat.id)
         : undefined;
 
-    const stopTyping = this.startTypingLoop(input.chat.id);
     const priorTurns = this.history.get(sessionScope);
 
     const run = async (): Promise<void> => {
@@ -1218,24 +1296,53 @@ export class TelegramBot {
         `[telegram] turn start chat=${String(input.chat.id)} type=${input.chat.type} user=${userId ?? 'anon'} history=${String(priorTurns.length)} roster=${rosterProvider ? 'on' : 'off'} attach=${String(attachCount)}`,
       );
       try {
-        const result = await chatAgent.chat({
-          userMessage: input.userMessage,
-          sessionScope,
-          origin,
-          ...(userId ? { userId } : {}),
-          ...(priorTurns.length > 0
-            ? {
-                priorTurns: priorTurns.map((t) => ({
-                  userMessage: t.userMessage,
-                  assistantAnswer: t.assistantAnswer,
-                })),
+        // Pace (spec 2042 §5.8): typing from the start, exactly one
+        // acknowledgement when the work clearly takes longer, no progress
+        // chatter. Telegram has no reply window, so the answer is always an
+        // ordinary message.
+        const { result } = await runPacedTurn(
+          () =>
+            chatAgent.chat({
+              userMessage: input.userMessage,
+              sessionScope,
+              origin,
+              ...(userId ? { userId } : {}),
+              ...(priorTurns.length > 0
+                ? {
+                    priorTurns: priorTurns.map((t) => ({
+                      userMessage: t.userMessage,
+                      assistantAnswer: t.assistantAnswer,
+                    })),
+                  }
+                : {}),
+              ...(input.attachments && input.attachments.length > 0
+                ? { attachments: input.attachments }
+                : {}),
+              userTimeZone: 'Europe/Berlin',
+            }),
+          this.paceProfile,
+          {
+            sendTyping: async () => {
+              await this.api.sendChatAction({ chat_id: input.chat.id, action: 'typing' });
+            },
+            // The acknowledgement is the agent's own words, so it goes out
+            // under the speaker the resolver announced. Without one there is
+            // nobody to say it as: the typing indicator (renewed every 4 s)
+            // carries the wait, which beats a line under a wrong or no name.
+            sendAck: async (text) => {
+              if (!announcedSpeaker) {
+                console.warn(`[telegram] pace acknowledgement skipped (chat=${String(input.chat.id)}): the resolver named no speaker`);
+                return;
               }
-            : {}),
-          ...(input.attachments && input.attachments.length > 0
-            ? { attachments: input.attachments }
-            : {}),
-          userTimeZone: 'Europe/Berlin',
-        });
+              await this.emitter.sendAnswer(input.chat.id, { text, speaker: announcedSpeaker });
+            },
+            onHookError: (hook, error) =>
+              console.warn(
+                `[telegram] pace ${hook} failed: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+          },
+          { locale, ...(this.paceClock ? { clock: this.paceClock } : {}) },
+        );
 
         if (isNoReply(result)) {
           logNoReplyDrop('telegram', {
@@ -1246,15 +1353,43 @@ export class TelegramBot {
           return;
         }
 
-        await this.renderer.renderAnswer(input.chat.id, result);
+        if (resolution.kind === 'refused') {
+          // A rejected turn is answered by `system` only. The agent behind a
+          // rejection carries out `/agent` and says everything else as
+          // `system`; anything it says as an agent is replaced by the
+          // resolver's notice.
+          if (result.speaker?.kind === 'system') {
+            await this.emitter.sendAnswer(input.chat.id, result);
+          } else {
+            console.warn('[telegram] rejected turn answered as an agent; replaced by the system notice');
+            await this.emitter.sendSystem(input.chat.id, resolution.notice?.text ?? NO_AGENT_TEXT);
+          }
+          return;
+        }
+        if (!result.speaker) {
+          // Fail closed: text that cannot name its speaker is not posted as an
+          // agent's, nor under no name. The person gets a system notice that
+          // something went wrong; the missing speaker is logged.
+          console.error(`[telegram] answer without a speaker withheld (chat=${String(input.chat.id)})`);
+          await this.emitter.sendSystem(input.chat.id, failureNoticeText('die Antwort konnte keinem Sprecher zugeordnet werden'));
+          return;
+        }
+        await this.emitter.sendAnswer(input.chat.id, result);
+        this.pendingReplies.remember(
+          pendingReplyKey(input.chat.id, input.from?.id),
+          result.interactive,
+        );
 
         // History append skipped for blocking `ask_user_choice` / slot-picker
         // turns — the "answer" there is a clarification prompt, not a real
-        // response. Post-S+7.5: both are discriminated via `interactive.kind`.
+        // response — and for management-layer notices (`/agent Mira`,
+        // "agent unavailable"), which are not part of the conversation with
+        // the agent. Post-S+7.5: both are discriminated via `interactive.kind`.
         const isBlockingInteractive =
           result.interactive?.kind === 'choice' ||
           result.interactive?.kind === 'slots';
-        if (!isBlockingInteractive) {
+        const isSystemNotice = result.speaker?.kind === 'system';
+        if (!isBlockingInteractive && !isSystemNotice) {
           this.history.append(sessionScope, {
             userMessage: input.userMessage,
             assistantAnswer: result.text,
@@ -1269,9 +1404,7 @@ export class TelegramBot {
       } catch (err) {
         console.error('[telegram] orchestrator failure:', err);
         const detail = err instanceof Error ? err.message : String(err);
-        await this.renderer.renderError(input.chat.id, detail);
-      } finally {
-        stopTyping();
+        await this.emitter.sendSystem(input.chat.id, failureNoticeText(detail));
       }
     };
 
@@ -1280,26 +1413,6 @@ export class TelegramBot {
     } else {
       await run();
     }
-  }
-
-  // ---------- typing-loop helper --------------------------------------
-
-  private startTypingLoop(chatId: number): () => void {
-    let stopped = false;
-    const tick = (): void => {
-      if (stopped) return;
-      this.api
-        .sendChatAction({ chat_id: chatId, action: 'typing' })
-        .catch(() => {
-          /* swallow — typing is best-effort */
-        });
-    };
-    tick();
-    const handle = setInterval(tick, 4_000);
-    return () => {
-      stopped = true;
-      clearInterval(handle);
-    };
   }
 }
 

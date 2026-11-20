@@ -14,7 +14,9 @@ export {
   TELEGRAM_CHANNEL_TYPE,
   TelegramApiClient,
   TelegramBot,
+  TELEGRAM_PACE_PROFILE,
   telegramTurnOrigin,
+  telegramUserRef,
   type TelegramBotOptions,
   type TelegramUpdate,
   type TelegramMessage,
@@ -24,10 +26,36 @@ export {
 } from './telegramBot.js';
 
 export {
-  TelegramRenderer,
-  escapeMarkdownV2,
-  type PendingCallback,
-} from './telegramRenderer.js';
+  TELEGRAM_DECORATIONS,
+  TELEGRAM_DECORATION_CHANNEL,
+  TelegramEmitter,
+  conversationKeyOf,
+  failureNoticeText,
+  type EmissionRecord,
+  type TelegramEmitterOptions,
+} from './telegramEmitter.js';
+
+export { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
+export { PersistentSpeakerHistoryStore } from './speakerHistory.js';
+export { BOT_COMMANDS, registerBotCommands } from './botCommands.js';
+export { resolveAgentForTurn, type AgentResolution, type ChannelRouteLookup } from './agentResolution.js';
+export {
+  TelegramConversationMessages,
+  isOwnBotKey,
+  telegramBotKey,
+  type TelegramConversationMessageSink,
+} from './conversationMessages.js';
+export {
+  TELEGRAM_SEND_CAPABILITIES,
+  classifyPostError,
+  createTelegramConversationSend,
+  createTelegramTargetedSend,
+  type TelegramSendDeps,
+} from './telegramSend.js';
+export {
+  TelegramConversationRosterProvider,
+  type TelegramConversationRosterDeps,
+} from './conversationRoster.js';
 
 export {
   createTelegramWebhookRouter,
