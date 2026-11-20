@@ -214,6 +214,11 @@ describe('reactions (spec 2043 §5.14): a thumbs-up instead of an echo', () => {
       const out = await ack(r, String(GROUP), '5', key);
       assert.equal(out.outcome === 'unreachable' && out.code, 'not_permitted', key);
     }
+    // A missing key (or no options at all) never falls back to the installation's bot.
+    for (const opts of [{}, { asChannelKey: undefined }, undefined]) {
+      const out = await r.conversation.react!(String(GROUP), '5', 'acknowledge', opts as never);
+      assert.equal(out.outcome === 'unreachable' && out.code, 'not_permitted');
+    }
     assert.equal(r.api.reactions.length, 0);
   });
 

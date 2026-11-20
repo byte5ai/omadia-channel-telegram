@@ -206,9 +206,13 @@ export function createTelegramConversationSend(lookup: TelegramBotLookup): Conve
       return poster.post(chatId, message, chatId > 0);
     },
     async react(conversationId, messageId, reaction, opts) {
-      // as exactly the bot the key names: the key is required here, so no
-      // key never falls back to the installation's own bot
-      const poster = posterFor(lookup, opts.asChannelKey);
+      // As exactly the bot the key names. The key is required: a missing one
+      // never falls back to the installation's own bot.
+      const key = opts?.asChannelKey;
+      if (typeof key !== 'string' || key.trim() === '') {
+        return unreachable('not_permitted', 'a reaction needs the identity it is set as (asChannelKey); nothing was set');
+      }
+      const poster = posterFor(lookup, key);
       if (!(poster instanceof TelegramPoster)) return poster;
       const chatId = parseChatId(conversationId);
       if (chatId === undefined) return unreachable('no_binding', `'${conversationId}' is not a Telegram chat id`);
@@ -216,7 +220,7 @@ export function createTelegramConversationSend(lookup: TelegramBotLookup): Conve
       if (telegramMessageId === undefined) {
         return unreachable('no_binding', `'${messageId}' is not a Telegram message id`);
       }
-      const emoji = TELEGRAM_REACTION_EMOJI[reaction] as string | undefined;
+      const emoji = Object.hasOwn(TELEGRAM_REACTION_EMOJI, reaction) ? (TELEGRAM_REACTION_EMOJI[reaction] as string) : undefined;
       if (emoji === undefined) return unreachable('channel_error', `Telegram has no form for the reaction '${String(reaction)}'`);
       const blocked = await poster.canPostTo(chatId);
       if (blocked) return blocked;
