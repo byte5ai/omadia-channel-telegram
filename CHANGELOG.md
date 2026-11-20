@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.4.0
+
+Agents as colleagues in Telegram (byte5ai/omadia#2042, issue #7). Needs a
+kernel with the speaker, plain-text renderer, decoration registry and pace of
+the 2042 channel SDK (byte5ai/omadia#2045, #2086, #2087); do not install it
+before that kernel runs.
+
+- **One emitter, every message attributed** (`TelegramEmitter`). Answers use
+  the SDK's `renderPlainAnswer`: a name line only where INV-4 asks for one,
+  colleagues' contributions as `Ben: …`, kernel notices as plain system text,
+  question cards as numbered text. Plugin notices (pairing, refusals,
+  failures) are `system` text. A test fails when a send path exists outside
+  the emitter.
+- **Decorations removed.** No inline-keyboard cards, no follow-up list, no
+  callback token map; none is declared for Telegram in the registry. Buttons
+  of older messages are acknowledged with a hint to answer in text. The only
+  declared element is the AI disclosure line, which is part of the text.
+- **Numbered questions** (choice, topic, slots) are answered by number or
+  label; the reply becomes the value a button tap carried.
+- **`/agent`** is registered with `setMyCommands` (default and `de`) and
+  passed to the kernel unchanged, `/agent@Bot …` included. Selection
+  exchanges are not added to the conversation history.
+- **Speaker history persisted** under `/memories/pairings/speaker-history/`
+  so the name line is correct after a restart.
+- **Conversation roster for the kernel** (`ConversationRosterProvider`,
+  feature-detected): `complete` when proven or a private chat, `partial` for
+  administrators and seen members, `unknown` when nothing was readable. Not
+  activated groups and foreign bot identities resolve to `undefined`.
+- **Pace** via `runPacedTurn`: typing from the start, renewed every 4 s, one
+  acknowledgement after 8 s, no progress messages, no reply window.
+- Fixed: the "not paired" refusal showed MarkdownV2 backslashes.
+- Own identity per agent (one bot token per agent) is **not** supported; the
+  README says why and what it would cost.
+- Tests: emitter paths (criterion 5), plain text, parity and decorations
+  (29, 30, 31), roster, command menu, pace.
+
 ## 0.3.0
 
 Telegram supplies the people present for member-scoped memory

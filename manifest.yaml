@@ -3,10 +3,10 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-telegram"
   name: "Telegram Channel"
-  version: "0.3.0"
+  version: "0.4.0"
   kind: "channel"
   domain: "channel.telegram"
-  description: "Telegram als zweiter First-Class-Channel von Omadia. Spricht die Telegram Bot API direkt (kein Drittanbieter-SDK), supports Webhook + Long-Polling-Fallback, MarkdownV2-Rendering, Inline-Keyboards für Choice-Cards / Slot-Picker / Follow-Ups, Roster via getChatAdministrators für Gruppen. Self-contained — keine `depends_on`-Beziehung. Validiert die @omadia/channel-sdk Contracts gegen ein Runtime ohne Bot-Framework."
+  description: "Telegram als zweiter First-Class-Channel von Omadia. Spricht die Telegram Bot API direkt (kein Drittanbieter-SDK), supports Webhook + Long-Polling-Fallback, Antworten als Klartext (Absender nur wo nötig, Beiträge anderer Agenten als \"Name: …\", Auswahl per Nummer statt Buttons), Agentenwahl per /agent, ehrlicher Gruppen-Roster (complete/partial/unknown). Self-contained — keine `depends_on`-Beziehung. Validiert die @omadia/channel-sdk Contracts gegen ein Runtime ohne Bot-Framework."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -123,7 +123,9 @@ playbook:
     ownt /api/telegram/webhook (in HTTPS-Webhook-Modus) oder pollt aktiv via
     getUpdates (LP-Modus). Gruppen-Roster via getChatAdministrators
     (Bot-API-Limitierung — non-admin Members bleiben für den Orchestrator
-    unsichtbar).
+    unsichtbar). Antworten sind Klartext ohne Buttons, Reaktionen oder
+    Fußzeilen; eine Installation ist eine Bot-Identität, mehrere Agenten
+    werden per `/agent <Name>` gewählt (der Kernel verwaltet die Auswahl).
 
 permissions:
   # Auto-generate + persist telegram_webhook_secret AND telegram_admin_token on
@@ -146,7 +148,7 @@ permissions:
 integrations:
   - id: "telegram_bot_api"
     kind: "http"
-    target: "Telegram Bot API (sendMessage, getUpdates, setWebhook, getChatAdministrators)"
+    target: "Telegram Bot API (sendMessage, getUpdates, setWebhook, setMyCommands, getChatAdministrators)"
     auth_from: "telegram_bot_token"
     docs: "https://core.telegram.org/bots/api"
 
