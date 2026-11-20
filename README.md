@@ -162,10 +162,23 @@ Telegram reply to that message, or a message that addresses the bot when it is
 the only open question) becomes the same typed answer a card would carry. This
 plugin has no card code. What it provides for that:
 
-- A conversation send and a targeted send (DM) provider that declare **only**
-  `asChannelKey`: no `poll`, no `card` (so the kernel posts them as text, and a
-  poll or card in a DM is refused as before), no mentions. The `messageId` a
-  send reports is the Telegram `message_id`; a reply points at it.
+- A conversation send and a targeted send (DM) provider that declare
+  `asChannelKey` (and, on the conversation send, `reactions`): no `poll`, no
+  `card` (so the kernel posts them as text, and a poll or card in a DM is
+  refused as before), no mentions. The `messageId` a send reports is the
+  Telegram `message_id`; a reply points at it.
+- **Reactions instead of echoes** (spec 2043 §5.14): the conversation send
+  implements `react`, so a facilitator records a contribution quietly with a
+  👍 on the person's message instead of posting an echo. It calls the Bot API
+  [`setMessageReaction`](https://core.telegram.org/bots/api#setmessagereaction)
+  with `chat_id` = the inbound event's `conversationId`, `message_id` = its
+  `messageId` and `reaction: [{ type: 'emoji', emoji: '👍' }]`, as exactly the
+  bot `asChannelKey` names (an unknown key is `not_permitted`; nothing is set
+  through another bot), and only in a group that activated that bot or a
+  private chat the DM policy allows. A bot sets at most one reaction per
+  message. A chat whose available reactions exclude 👍, a deleted message or a
+  rate limit comes back as `unreachable` / `channel_error` with Telegram's
+  message, never thrown.
 - `created` events for a conversation the kernel subscribed an agent to, with
   `replyToMessageId` (the `message_id` replied to) and `addressedToBot` (a
   mention, a command, a reply to the bot, or a private chat). The bot's own
@@ -214,6 +227,11 @@ provided by the omadia host at runtime. For local typechecking,
 ## Manifest
 
 See [`manifest.yaml`](manifest.yaml) for the full plugin manifest.
+
+Permissions: outbound network to `api.telegram.org` only. Telegram needs no
+extra bot right for anything this plugin does, reactions included
+(`setMessageReaction` works for any bot that is a member of the chat; which
+emoji are allowed is the chat's own `available_reactions` setting).
 
 ## License
 

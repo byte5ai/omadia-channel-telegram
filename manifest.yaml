@@ -134,6 +134,9 @@ playbook:
     `/agents` listet; der Agent hinter dem Resolver führt es aus, der Kanal reicht
     nur den Text durch). Fragen und Abstimmungen eines Agenten kommen als
     nummerierter Klartext und werden per Antwort auf die Nachricht beantwortet.
+    Einen erfassten Beitrag bestätigt ein Agent still mit einer 👍-Reaktion
+    auf die Nachricht (setMessageReaction, als genau der Bot des Agenten)
+    statt mit einer Echo-Nachricht.
 
 permissions:
   # Auto-generate + persist telegram_webhook_secret AND telegram_admin_token on
@@ -156,7 +159,7 @@ permissions:
 integrations:
   - id: "telegram_bot_api"
     kind: "http"
-    target: "Telegram Bot API (sendMessage, getUpdates, setWebhook, setMyCommands, getChatAdministrators)"
+    target: "Telegram Bot API (sendMessage, getUpdates, setWebhook, setMyCommands, getChatAdministrators, setMessageReaction)"
     auth_from: "telegram_bot_token"
     docs: "https://core.telegram.org/bots/api"
 

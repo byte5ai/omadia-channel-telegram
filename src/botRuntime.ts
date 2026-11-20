@@ -132,6 +132,7 @@ export function createBotRuntime(
   });
   const sendDeps: TelegramSendDeps = {
     emitter: new TelegramEmitter({ api, speakerHistory: shared.speakerHistory, nativeIdentity: agentBot }),
+    api,
     pairingStore,
     dmPolicy: shared.dmPolicy,
     botKey,

@@ -27,6 +27,7 @@ function bot(key: string, nativeIdentity: boolean) {
   const api = recordingApi();
   const deps = {
     emitter: new TelegramEmitter({ api: api.client, speakerHistory: new InMemorySpeakerHistoryStore(), nativeIdentity }),
+    api: api.client,
     pairingStore: new PairingStore(memoryStore(new Map())),
     dmPolicy: 'open' as DmPolicy,
     botKey: key,

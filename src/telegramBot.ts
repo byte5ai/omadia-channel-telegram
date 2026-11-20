@@ -340,6 +340,19 @@ export class TelegramApiClient {
   }
 
   /**
+   * Set this bot's reaction on a message (replaces the bot's previous one:
+   * a bot sets at most one reaction per message).
+   * https://core.telegram.org/bots/api#setmessagereaction
+   */
+  async setMessageReaction(params: {
+    chat_id: number;
+    message_id: number;
+    reaction: ReadonlyArray<{ type: 'emoji'; emoji: string }>;
+  }): Promise<true> {
+    return await this.call<true>('setMessageReaction', params);
+  }
+
+  /**
    * Register the bot's native command menu (the "/" suggestions). Replaces
    * the list of the given scope and language.
    */

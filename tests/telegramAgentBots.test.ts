@@ -50,6 +50,7 @@ function runtime(botId: number, username: string, api = recordingApi()): Telegra
     bot: {} as never,
     sendDeps: {
       emitter: new TelegramEmitter({ api: api.client, speakerHistory: new InMemorySpeakerHistoryStore() }),
+      api: api.client,
       pairingStore,
       dmPolicy: 'open' as const,
       botKey: `tg:${String(botId)}`,
@@ -228,6 +229,21 @@ describe('fleet', () => {
     assert.equal(defaultApi.sent.length, 1);
     const unknown = await send.sendToConversation('4711', { text: 'x' }, { asChannelKey: 'tg:1' });
     assert.equal(unknown.outcome === 'unreachable' && unknown.code, 'not_permitted');
+  });
+
+  it('a reaction for an agent bot is set by exactly that bot; an unknown key reacts through no bot', async () => {
+    const defaultApi = recordingApi();
+    const miraApi = recordingApi();
+    const fleet = new TelegramBotFleet(runtime(DEFAULT_ID, 'ColleagueBot', defaultApi));
+    await fleet.add(runtime(MIRA_ID, 'mira_bot', miraApi));
+    const send = createTelegramConversationSend((key) => fleet.sendDepsFor(key));
+    const viaMira = await send.react!('4711', '12', 'acknowledge', { asChannelKey: `tg:${String(MIRA_ID)}` });
+    assert.deepEqual(viaMira, { outcome: 'reacted' });
+    assert.deepEqual(miraApi.reactions, [{ chat_id: 4711, message_id: 12, reaction: [{ type: 'emoji', emoji: '👍' }] }]);
+    assert.equal(defaultApi.reactions.length, 0);
+    const unknown = await send.react!('4711', '12', 'acknowledge', { asChannelKey: 'tg:1' });
+    assert.equal(unknown.outcome === 'unreachable' && unknown.code, 'not_permitted');
+    assert.equal(defaultApi.reactions.length + miraApi.reactions.length, 1);
   });
 
   it('presentIn lists the agent bots that are members of the chat', async () => {
