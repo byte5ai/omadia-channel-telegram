@@ -18,7 +18,7 @@
 import type {
   AgentIdentityField,
   AgentIdentityProvider,
-  AgentIdentityProvisionOutcome,
+  AgentIdentityRefusal,
   ConversationRoster,
   ConversationRosterProvider,
   ConversationRosterRequest,
@@ -71,9 +71,39 @@ export class TelegramBotFleet {
     return [...this.agentBots.keys()];
   }
 
-  add(runtime: TelegramBotRuntime): void {
+  private closed = false;
+  /** Bots whose start waits for Telegram to become reachable again (boot). */
+  private readonly retrying = new Set<string>();
+
+  /**
+   * Hold a started bot. A bot that runs under the key already is stopped
+   * first (never two loops for one bot), and after {@link stopAll} nothing is
+   * held any more: a late start is stopped at once. `false` = not added.
+   */
+  async add(runtime: TelegramBotRuntime): Promise<boolean> {
+    if (this.closed) {
+      await runtime.stop();
+      return false;
+    }
+    const previous = this.agentBots.get(runtime.botKey);
     this.agentBots.set(runtime.botKey, runtime);
+    this.retrying.delete(runtime.botKey);
     this.presence.clear();
+    if (previous && previous !== runtime) await previous.stop();
+    return true;
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  markRetrying(botKey: string, retrying: boolean): void {
+    if (retrying) this.retrying.add(botKey);
+    else this.retrying.delete(botKey);
+  }
+
+  isRetrying(botKey: string): boolean {
+    return this.retrying.has(botKey);
   }
 
   /** Removes and returns the runtime; the caller stops it. */
@@ -124,7 +154,11 @@ export class TelegramBotFleet {
   }
 
   async stopAll(): Promise<void> {
-    await Promise.all([...this.agentBots.values()].map((r) => r.stop()));
+    this.closed = true;
+    const running = [...this.agentBots.values()];
+    this.agentBots.clear();
+    this.retrying.clear();
+    await Promise.all(running.map((r) => r.stop()));
   }
 }
 
@@ -145,94 +179,134 @@ export interface AgentBotDeps {
   readonly log: (level: 'info' | 'warn' | 'error', message: string) => void;
 }
 
-const refuse = (
-  code: Extract<AgentIdentityProvisionOutcome, { ok: false }>['code'],
-  message: string,
-): AgentIdentityProvisionOutcome => ({ ok: false, code, message });
+const refuse = (code: AgentIdentityRefusal['code'], message: string): AgentIdentityRefusal => ({ ok: false, code, message });
 
 /** Telegram's answer to a bad token is `401 Unauthorized` (or `404 Not Found`). */
 function isRejectedToken(err: unknown): boolean {
   return /code=(401|404)/.test(errorMessage(err));
 }
 
+/** Who a token is, as Telegram says; a refusal for a malformed or rejected token. */
+async function botOf(
+  apiFor: (token: string) => TelegramApiClient,
+  credentials: Readonly<Record<string, string>>,
+): Promise<{ api: TelegramApiClient; me: TelegramUser; token: string } | AgentIdentityRefusal> {
+  const token = credentials['bot_token']?.trim() ?? '';
+  if (!BOT_TOKEN_RE.test(token)) {
+    return refuse('invalid_input', 'this is not a Telegram bot token (expected <botId>:<secret> from @BotFather)');
+  }
+  const api = apiFor(token);
+  try {
+    return { api, me: await api.getMe(), token };
+  } catch (err) {
+    return isRejectedToken(err)
+      ? refuse('invalid_credentials', 'Telegram rejected this bot token')
+      : refuse('unreachable', 'Telegram could not be reached to check the token');
+  }
+}
+
+const isRefusal = (value: object): value is AgentIdentityRefusal => (value as { ok?: unknown }).ok === false;
+
 export function createTelegramAgentIdentityProvider(deps: AgentBotDeps): AgentIdentityProvider {
   const apiFor = deps.apiFor ?? ((token: string) => new TelegramApiClient(token));
   return {
     channelType: TELEGRAM_CHANNEL_TYPE,
     fields: AGENT_BOT_FIELDS,
-    async provision(input) {
-      const token = input.credentials['bot_token']?.trim() ?? '';
-      const parsed = BOT_TOKEN_RE.exec(token);
-      if (!parsed) return refuse('invalid_input', 'this is not a Telegram bot token (expected <botId>:<secret> from @BotFather)');
-      const api = apiFor(token);
-      let me: TelegramUser;
-      try {
-        me = await api.getMe();
-      } catch (err) {
-        return isRejectedToken(err)
-          ? refuse('invalid_credentials', 'Telegram rejected this bot token')
-          : refuse('unreachable', 'Telegram could not be reached to check the token');
+    // No side effect: the kernel decides whether this bot is free.
+    async identify(input) {
+      const bot = await botOf(apiFor, input.credentials);
+      if (isRefusal(bot)) return bot;
+      if (bot.me.id === deps.fleet.default.botId) return refuse('already_in_use', 'this is the Telegram channel’s own bot');
+      return {
+        ok: true,
+        channelKey: telegramBotKey(bot.me.id),
+        ...(bot.me.username ? { externalRef: `@${bot.me.username}` } : {}),
+        ...(bot.me.first_name ? { displayName: bot.me.first_name } : {}),
+      };
+    },
+    // Called only for a bot no agent owns (the kernel checked).
+    async provision(input, channelKey) {
+      const bot = await botOf(apiFor, input.credentials);
+      if (isRefusal(bot)) return bot;
+      const botKey = telegramBotKey(bot.me.id);
+      if (botKey !== channelKey.trim().toLowerCase() || bot.me.id === deps.fleet.default.botId) {
+        return refuse('invalid_input', 'the token names another bot than the one checked');
       }
-      if (me.id === deps.fleet.default.botId) {
-        return refuse('already_in_use', 'this is the Telegram channel’s own bot');
-      }
-      const botKey = telegramBotKey(me.id);
-      const externalRef = me.username ? `@${me.username}` : undefined;
-      // The same bot again (a re-entered or rotated token): restart it on the new token.
-      await deps.fleet.remove(botKey)?.stop();
-      await deps.secrets.set(`${AGENT_BOT_TOKEN_PREFIX}${String(me.id)}`, token);
+      if (deps.fleet.isClosed) return refuse('unreachable', 'the Telegram channel is shutting down');
+      const vaultKey = `${AGENT_BOT_TOKEN_PREFIX}${String(bot.me.id)}`;
+      await deps.secrets.set(vaultKey, bot.token);
       try {
-        deps.fleet.add(await deps.startAgentBot(api, me));
+        // `add` stops a bot that still ran under this key (nobody owned it).
+        if (!(await deps.fleet.add(await deps.startAgentBot(bot.api, bot.me)))) {
+          return refuse('unreachable', 'the Telegram channel is shutting down');
+        }
       } catch (err) {
-        await deps.secrets.delete(`${AGENT_BOT_TOKEN_PREFIX}${String(me.id)}`);
+        await deps.secrets.delete(vaultKey);
         deps.log('error', `agent bot ${botKey} for '${input.agentSlug}' did not start: ${errorMessage(err)}`);
         return refuse('unreachable', 'the bot could not be started');
       }
-      deps.log('info', `agent bot ${externalRef ?? botKey} (${botKey}) started for agent '${input.agentSlug}'`);
-      return {
-        ok: true,
-        channelKey: botKey,
-        ...(externalRef ? { externalRef } : {}),
-        ...(me.first_name ? { displayName: me.first_name } : {}),
-      };
+      deps.log('info', `agent bot ${bot.me.username ? `@${bot.me.username}` : botKey} (${botKey}) started for agent '${input.agentSlug}'`);
+      return { ok: true };
     },
     async release(channelKey) {
       const key = channelKey.trim().toLowerCase();
-      const runtime = deps.fleet.remove(key);
-      if (runtime) await runtime.stop();
+      deps.fleet.markRetrying(key, false);
+      await deps.fleet.remove(key)?.stop();
       const botId = /^tg:(\d+)$/.exec(key)?.[1];
       if (botId) await deps.secrets.delete(`${AGENT_BOT_TOKEN_PREFIX}${botId}`);
       deps.log('info', `agent bot ${key} stopped and its token removed`);
     },
     async status(channelKey) {
-      const runtime = deps.fleet.agentBot(channelKey.trim().toLowerCase());
-      if (!runtime) return { state: 'stopped', detail: 'the bot is not running in this installation (token missing or rejected)' };
-      return { state: runtime.mode() === 'stopped' ? 'stopped' : 'running', detail: runtime.mode() };
+      const key = channelKey.trim().toLowerCase();
+      const runtime = deps.fleet.agentBot(key);
+      if (runtime) return { state: runtime.mode() === 'stopped' ? 'stopped' : 'running', detail: runtime.mode() };
+      if (deps.fleet.isRetrying(key)) return { state: 'unknown', detail: 'Telegram is not reachable; the bot starts as soon as it is' };
+      return { state: 'stopped', detail: 'the bot is not running in this installation (token missing or rejected)' };
     },
     defaultChannelKey: () => deps.fleet.default.botKey,
     presentIn: (conversationId) => deps.fleet.presentIn(conversationId),
   };
 }
 
+/** Backoff of a stored bot whose start failed because Telegram was not reachable. */
+export const BOOT_RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 60_000, 300_000];
+
 /**
- * Start every agent bot whose token is in the vault (boot). A token Telegram
- * rejects stays where it is and the bot stays stopped: the operator sees it
- * on the agent page and replaces or removes it.
+ * Start every agent bot whose token is in the vault (boot), all at once and
+ * without holding up activation. A token Telegram REJECTS stays where it is
+ * and the bot stays stopped: the operator sees it on the agent page and
+ * replaces or removes it. Any other failure (Telegram unreachable during a
+ * deploy) is retried with backoff, the last delay repeating.
  */
-export async function startStoredAgentBots(deps: AgentBotDeps): Promise<void> {
+export async function startStoredAgentBots(
+  deps: AgentBotDeps,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<void> {
   const apiFor = deps.apiFor ?? ((token: string) => new TelegramApiClient(token));
   const keys = (await deps.secrets.keys()).filter((k) => k.startsWith(AGENT_BOT_TOKEN_PREFIX));
-  for (const key of keys) {
-    const token = await deps.secrets.get(key);
-    if (!token) continue;
-    try {
-      const api = apiFor(token);
-      const me = await api.getMe();
-      if (me.id === deps.fleet.default.botId || deps.fleet.agentBotById(me.id)) continue;
-      deps.fleet.add(await deps.startAgentBot(api, me));
-    } catch (err) {
-      deps.log('warn', `agent bot from vault key ${key} did not start: ${errorMessage(err)}`);
+  const startOne = async (key: string): Promise<void> => {
+    const botKey = `tg:${key.slice(AGENT_BOT_TOKEN_PREFIX.length)}`;
+    for (let attempt = 0; !deps.fleet.isClosed; attempt++) {
+      const token = await deps.secrets.get(key);
+      if (!token) return;
+      try {
+        const api = apiFor(token);
+        const me = await api.getMe();
+        if (me.id === deps.fleet.default.botId || deps.fleet.agentBotById(me.id)) return;
+        await deps.fleet.add(await deps.startAgentBot(api, me));
+        return;
+      } catch (err) {
+        if (isRejectedToken(err)) {
+          deps.log('warn', `agent bot from vault key ${key} not started: Telegram rejects its token`);
+          return;
+        }
+        const delay = BOOT_RETRY_DELAYS_MS[Math.min(attempt, BOOT_RETRY_DELAYS_MS.length - 1)] ?? 300_000;
+        deps.fleet.markRetrying(botKey, true);
+        deps.log('warn', `agent bot from vault key ${key} did not start (${errorMessage(err)}); retrying in ${String(delay)} ms`);
+        await sleep(delay);
+      }
     }
-  }
+  };
+  await Promise.all(keys.map(startOne));
   deps.log('info', `telegram agent bots running: ${String(deps.fleet.agentBotKeys().length)}`);
 }

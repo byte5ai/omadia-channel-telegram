@@ -104,10 +104,15 @@ describe('identity provider', () => {
     assert.equal(r.provider.defaultChannelKey?.(), `tg:${String(DEFAULT_ID)}`);
   });
 
-  it('checks the token, keeps it in the vault, starts the bot and returns tg:<botId>', async () => {
+  it('identify names the bot without a side effect; provision keeps the token and starts it', async () => {
     const r = rig(mira);
-    const out = await r.provider.provision({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: MIRA_TOKEN } });
-    assert.deepEqual(out, { ok: true, channelKey: `tg:${String(MIRA_ID)}`, externalRef: '@mira_bot', displayName: 'Mira' });
+    const input = { agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: MIRA_TOKEN } };
+    const named = await r.provider.identify(input);
+    assert.deepEqual(named, { ok: true, channelKey: `tg:${String(MIRA_ID)}`, externalRef: '@mira_bot', displayName: 'Mira' });
+    assert.equal(r.secrets.data.size, 0, 'identify stores nothing');
+    assert.deepEqual(r.started, [], 'identify starts nothing');
+    const out = await r.provider.provision(input, `tg:${String(MIRA_ID)}`);
+    assert.deepEqual(out, { ok: true });
     assert.equal(r.secrets.data.get(`${AGENT_BOT_TOKEN_PREFIX}${String(MIRA_ID)}`), MIRA_TOKEN);
     assert.deepEqual(r.started, [MIRA_ID]);
     assert.ok(r.fleet.agentBot(`tg:${String(MIRA_ID)}`));
@@ -117,7 +122,7 @@ describe('identity provider', () => {
   it('refuses a malformed token without calling Telegram', async () => {
     let called = 0;
     const r = rig(async () => (called++, mira()));
-    const out = await r.provider.provision({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: 'nope' } });
+    const out = await r.provider.identify({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: 'nope' } });
     assert.equal(out.ok === false && out.code, 'invalid_input');
     assert.equal(called, 0);
   });
@@ -126,36 +131,48 @@ describe('identity provider', () => {
     const rejected = rig(async () => {
       throw new Error('Telegram API getMe failed: Unauthorized (code=401)');
     });
-    const a = await rejected.provider.provision({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: MIRA_TOKEN } });
+    const a = await rejected.provider.identify({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: MIRA_TOKEN } });
     assert.equal(a.ok === false && a.code, 'invalid_credentials');
     assert.equal(rejected.secrets.data.size, 0);
     const down = rig(async () => {
       throw new Error('fetch failed');
     });
-    const b = await down.provider.provision({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: MIRA_TOKEN } });
+    const b = await down.provider.identify({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: MIRA_TOKEN } });
     assert.equal(b.ok === false && b.code, 'unreachable');
   });
 
   it('refuses the channel’s own bot', async () => {
     const r = rig(async () => ({ id: DEFAULT_ID, is_bot: true, first_name: 'Colleague', username: 'ColleagueBot' }));
-    const out = await r.provider.provision({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: `${String(DEFAULT_ID)}:AAH_default_secret_token_012345` } });
+    const out = await r.provider.identify({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: `${String(DEFAULT_ID)}:AAH_default_secret_token_012345` } });
     assert.equal(out.ok === false && out.code, 'already_in_use');
     assert.equal(r.started.length, 0);
   });
 
-  it('the same bot again restarts it on the new token', async () => {
+  it('a bot that still ran under the key (nobody owns it) is stopped when it starts again: never two loops', async () => {
     const r = rig(mira);
-    await r.provider.provision({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: MIRA_TOKEN } });
-    const first = r.fleet.agentBot(`tg:${String(MIRA_ID)}`) as TelegramBotRuntime & { stopped: number };
+    const key = `tg:${String(MIRA_ID)}`;
+    await r.provider.provision({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: MIRA_TOKEN } }, key);
+    const first = r.fleet.agentBot(key) as TelegramBotRuntime & { stopped: number };
     const rotated = `${String(MIRA_ID)}:AAH_rotated_secret_token_0123456`;
-    await r.provider.provision({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: rotated } });
+    await r.provider.provision({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: rotated } }, key);
     assert.equal(first.stopped, 1);
     assert.equal(r.secrets.data.get(`${AGENT_BOT_TOKEN_PREFIX}${String(MIRA_ID)}`), rotated);
   });
 
+  it('provision refuses a token for another bot than the key named, and after the channel closed', async () => {
+    const r = rig(mira);
+    const input = { agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: MIRA_TOKEN } };
+    const other = await r.provider.provision(input, 'tg:1');
+    assert.equal(other.ok === false && other.code, 'invalid_input');
+    await r.fleet.stopAll();
+    const late = await r.provider.provision(input, `tg:${String(MIRA_ID)}`);
+    assert.equal(late.ok, false);
+    assert.equal(r.started.length, 0);
+  });
+
   it('release stops the bot and deletes its token; status says so', async () => {
     const r = rig(mira);
-    await r.provider.provision({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: MIRA_TOKEN } });
+    await r.provider.provision({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: MIRA_TOKEN } }, `tg:${String(MIRA_ID)}`);
     const running = r.fleet.agentBot(`tg:${String(MIRA_ID)}`) as TelegramBotRuntime & { stopped: number };
     assert.equal((await r.provider.status!(`tg:${String(MIRA_ID)}`)).state, 'running');
     await r.provider.release(`TG:${String(MIRA_ID)}`);
@@ -172,9 +189,26 @@ describe('identity provider', () => {
     r.secrets.data.set(`${AGENT_BOT_TOKEN_PREFIX}${String(MIRA_ID)}`, MIRA_TOKEN);
     r.secrets.data.set(`${AGENT_BOT_TOKEN_PREFIX}7000000002`, '7000000002:AAH_revoked_secret_token_01234');
     r.secrets.data.set('telegram_bot_token', 'not an agent bot');
-    await startStoredAgentBots(r.deps);
+    await startStoredAgentBots(r.deps, async () => undefined);
     assert.deepEqual(r.fleet.agentBotKeys(), [`tg:${String(MIRA_ID)}`]);
     assert.equal(r.secrets.data.size, 3);
+  });
+
+  it('boot retries a bot while Telegram is unreachable, and says so in the status', async () => {
+    let calls = 0;
+    const r = rig(async () => {
+      calls += 1;
+      if (calls < 3) throw new Error('fetch failed');
+      return mira();
+    });
+    r.secrets.data.set(`${AGENT_BOT_TOKEN_PREFIX}${String(MIRA_ID)}`, MIRA_TOKEN);
+    const statuses: string[] = [];
+    await startStoredAgentBots(r.deps, async () => {
+      statuses.push((await r.provider.status!(`tg:${String(MIRA_ID)}`)).state);
+    });
+    assert.deepEqual(statuses, ['unknown', 'unknown']);
+    assert.deepEqual(r.fleet.agentBotKeys(), [`tg:${String(MIRA_ID)}`]);
+    assert.equal((await r.provider.status!(`tg:${String(MIRA_ID)}`)).state, 'running');
   });
 });
 
@@ -183,7 +217,7 @@ describe('fleet', () => {
     const defaultApi = recordingApi();
     const miraApi = recordingApi();
     const fleet = new TelegramBotFleet(runtime(DEFAULT_ID, 'ColleagueBot', defaultApi));
-    fleet.add(runtime(MIRA_ID, 'mira_bot', miraApi));
+    await fleet.add(runtime(MIRA_ID, 'mira_bot', miraApi));
     const send = createTelegramConversationSend((key) => fleet.sendDepsFor(key));
     const viaMira = await send.sendToConversation('4711', { text: 'Hallo von Mira' }, { asChannelKey: `tg:${String(MIRA_ID)}` });
     assert.equal(viaMira.outcome, 'delivered');
@@ -200,8 +234,8 @@ describe('fleet', () => {
     const memberApi = { ...recordingApi().client, getChatMember: async () => ({ user: {}, status: 'member' }) } as unknown as TelegramApiClient;
     const goneApi = { ...recordingApi().client, getChatMember: async () => ({ user: {}, status: 'left' }) } as unknown as TelegramApiClient;
     const fleet = new TelegramBotFleet(runtime(DEFAULT_ID, 'ColleagueBot'));
-    fleet.add({ ...runtime(MIRA_ID, 'mira_bot'), api: memberApi });
-    fleet.add({ ...runtime(7000000002, 'otto_bot'), api: goneApi });
+    await fleet.add({ ...runtime(MIRA_ID, 'mira_bot'), api: memberApi });
+    await fleet.add({ ...runtime(7000000002, 'otto_bot'), api: goneApi });
     assert.deepEqual(await fleet.presentIn(String(GROUP)), [`tg:${String(MIRA_ID)}`]);
   });
 });

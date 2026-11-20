@@ -245,7 +245,11 @@ export async function activate(
       },
       log: (level, message) => core.log(level, message),
     };
-    await startStoredAgentBots(agentBotDeps);
+    // In the background, all at once: a slow or unreachable Telegram must not
+    // hold up activation; unreachable bots are retried (startStoredAgentBots).
+    void startStoredAgentBots(agentBotDeps).catch((err: unknown) =>
+      core.log('warn', `telegram agent bots could not be started: ${err instanceof Error ? err.message : String(err)}`),
+    );
     if (typeof core.registerAgentIdentityProvider === 'function') {
       core.registerAgentIdentityProvider(ctx.agentId, createTelegramAgentIdentityProvider(agentBotDeps));
       core.log('info', 'telegram agent bots: identity provider registered (one bot per agent)');

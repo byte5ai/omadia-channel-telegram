@@ -176,8 +176,9 @@ plugin has no card code. What it provides for that:
   recorded (Telegram does not report them to this plugin). With BotFather
   privacy mode on the bot only sees mentions, commands and replies, so a
   facilitation that needs every message needs privacy mode off.
-- The own-identity key of this bot is `@<bot_username>`. A send that names
-  another identity is refused, nothing is posted under a different name.
+- Every bot's own-identity key is `tg:<botId>` (the installation's bot and
+  each agent's bot). A send names the bot it goes out as; a key no bot of
+  this installation has is refused, nothing is posted under a different name.
 
 ### Groups
 
