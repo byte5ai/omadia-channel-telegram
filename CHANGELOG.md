@@ -78,7 +78,7 @@ before that kernel runs.
   `reportConversationMessage` (feature-detected, 1.5 s timeout, errors logged,
   never thrown) before the turn; `answeredCard: true` starts no turn. Delivery
   mode `all` is unchanged.
-- **compat.core** `>=1.74.0 <2.0` (placeholder; the parent session sets the
+- **compat.core** `>=1.76.0 <2.0` (placeholder; the parent session sets the
   final range with the release).
 - Own identity per agent (one bot token per agent) is **not** supported; the
   README says why and what it would cost.

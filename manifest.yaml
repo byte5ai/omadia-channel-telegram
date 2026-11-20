@@ -20,7 +20,7 @@ compat:
   # Placeholder for the kernel that ships the S1 routing contract (reject notices,
   # speaker before the answer, SDK principal, /agent handled by the resolver's
   # ChatAgent). The parent session sets the final range with the release.
-  core: ">=1.74.0 <2.0"
+  core: ">=1.76.0 <2.0"
   node: ">=20"
 
 lifecycle:
