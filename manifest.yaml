@@ -193,8 +193,9 @@ integrations:
 #                           activate() throws when absent, but a `requires:`
 #                           entry could never resolve.
 #   - `channelResolver@1` — per-turn Agent routing; also kernel-side, and
-#                           absence is survivable (falls back to the default
-#                           chatAgent).
+#                           absence is survivable (a host without the registry
+#                           routes to the default chatAgent; with the registry
+#                           chatAgent@1 is never a fallback).
 requires:
   - "chatAgent@^1"
   - "memoryStore@^1"

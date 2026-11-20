@@ -84,6 +84,20 @@ With **several** omadia bots in one group, keep BotFather privacy mode **on**
 the `@YourBot` form; with privacy off every bot sees the bare command and each
 answers it.
 
+**Which key a selection hangs on.** The kernel stores `/agent` selections at the
+key the resolver is called with, plus the sender's principal. The bot probes
+the chat id, `@<bot_username>` and the bare username (all with the sender's
+principal and language, `de`/`en` from Telegram's `language_code`) and uses the
+key where something is actually decided: an agent's own bot wins, then a
+selection or binding (chat before bot), then the instance's default-agent
+table, which every key reports alike and which therefore never shadows a
+binding on the bot. With only the default table, or nothing, the chat id is the
+key, so a selection is per chat and person. With an operator binding on
+`@<bot_username>`, the selection sits at the bot and applies to that person in
+all chats of the bot. The shared `chatAgent@1` is never a fallback: with a
+registry it only refuses; only a host without one uses it, and a failing
+resolver ends in a short notice, not in another agent.
+
 When no agent may answer a turn (agent disabled, not available to you, nothing
 bound) the kernel says why in a `system` notice and the plugin posts it. It is
 never an agent's answer, and there is no fallback agent.

@@ -32,6 +32,16 @@ before that kernel runs.
   exists. A rejected turn is answered by `system` only; a throwing resolver is
   not a rejection and uses the default agent. Keys tried: chat id,
   `@bot_username`, bare username.
+- **No fallback to `chatAgent@1`**: routing goes through the SDK's
+  `resolveChannelRoute`. A resolver that throws now ends in a short notice
+  (before: the default agent answered); only a host without a resolver uses
+  the default `chatAgent`.
+- **Selection key** (S1 rule: the key the resolver is called with): the chat id,
+  `@bot_username` and the bare username are all probed. Winner: an exclusive
+  hit, else the first result something decided (selection, binding, explicit),
+  chat before bot, else the default-table agent, else the first rejection. The
+  default table no longer shadows a binding on the bot key. Every call carries
+  the sender's `de`/`en` locale. See README.
 - **One principal form**: the sender is `user:telegram-chat:<id>`
   (`channelUserPrincipal` / `turnPrincipal` from the SDK) for routing and in
   the turn origin; the former `telegram:<id>` principal is gone. The turn origin
