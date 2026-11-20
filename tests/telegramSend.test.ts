@@ -9,6 +9,8 @@ import { strict as assert } from 'node:assert';
 import { InMemorySpeakerHistoryStore } from '@omadia/channel-sdk';
 import {
   PairingStore,
+  TELEGRAM_CONVERSATION_SEND_CAPABILITIES,
+  TELEGRAM_REACTION_EMOJI,
   TELEGRAM_SEND_CAPABILITIES,
   TelegramEmitter,
   createTelegramConversationSend,
@@ -25,9 +27,11 @@ const GROUP = -100777;
 async function rig(opts: { dmPolicy?: DmPolicy; activate?: boolean; failWith?: string } = {}) {
   const api = recordingApi();
   if (opts.failWith) {
-    (api.client as unknown as { sendMessage: () => Promise<never> }).sendMessage = async () => {
+    const fail = async (): Promise<never> => {
       throw new Error(opts.failWith);
     };
+    (api.client as unknown as { sendMessage: () => Promise<never> }).sendMessage = fail;
+    (api.client as unknown as { setMessageReaction: () => Promise<never> }).setMessageReaction = fail;
   }
   const files = new Map<string, string>();
   const pairingStore = new PairingStore(memoryStore(files));
@@ -38,6 +42,7 @@ async function rig(opts: { dmPolicy?: DmPolicy; activate?: boolean; failWith?: s
   }
   const deps = {
     emitter: new TelegramEmitter({ api: api.client, speakerHistory: new InMemorySpeakerHistoryStore() }),
+    api: api.client,
     pairingStore,
     dmPolicy: opts.dmPolicy ?? ('open' as DmPolicy),
     botKey: BOT_KEY,
@@ -56,13 +61,15 @@ async function rig(opts: { dmPolicy?: DmPolicy; activate?: boolean; failWith?: s
 const texts = (r: Awaited<ReturnType<typeof rig>>): string[] => r.api.sent.map((s) => String(s.params['text']));
 
 describe('declared capabilities', () => {
-  it('declare the own identity and nothing else: no poll, no card, no mentions, no AI label', () => {
+  it('declare the own identity, and reactions on the conversation send: no poll, no card, no mentions, no AI label', () => {
     assert.deepEqual({ ...TELEGRAM_SEND_CAPABILITIES }, { asChannelKey: true });
+    assert.deepEqual({ ...TELEGRAM_CONVERSATION_SEND_CAPABILITIES }, { asChannelKey: true, reactions: true });
   });
 
-  it('both providers declare exactly that, so the kernel posts a card or poll as text itself', async () => {
+  it('the providers declare exactly that, so the kernel posts a card or poll as text itself', async () => {
     const r = await rig();
-    assert.deepEqual({ ...r.conversation.supports }, { asChannelKey: true });
+    assert.deepEqual({ ...r.conversation.supports }, { asChannelKey: true, reactions: true });
+    assert.equal(typeof r.conversation.react, 'function', 'reactions are declared because react is implemented');
     assert.deepEqual({ ...r.targeted.supports }, { asChannelKey: true });
   });
 });
@@ -175,5 +182,72 @@ describe('targeted send (a DM to one person)', () => {
     const c = await r.targeted.sendToUser({ principalId: 'user:telegram-chat:9' }, { text: 'x' }, { asChannelKey: '@ColleagueBot' });
     assert.equal(c.outcome === 'unreachable' && c.code, 'not_permitted');
     assert.equal(r.api.sent.length, 0);
+  });
+});
+
+describe('reactions (spec 2043 §5.14): a thumbs-up instead of an echo', () => {
+  const ack = (r: Awaited<ReturnType<typeof rig>>, conversationId: string, messageId: string, asChannelKey = BOT_KEY) =>
+    r.conversation.react!(conversationId, messageId, 'acknowledge', { asChannelKey });
+
+  it('acknowledge is Telegram\'s 👍', () => {
+    assert.deepEqual({ ...TELEGRAM_REACTION_EMOJI }, { acknowledge: '👍' });
+  });
+
+  it('sets the reaction with setMessageReaction on the message the inbound event named, and posts nothing', async () => {
+    const r = await rig();
+    // inbound events report conversationId = String(chat.id), messageId = String(message_id)
+    const out = await ack(r, String(GROUP), '321');
+    assert.deepEqual(out, { outcome: 'reacted' });
+    assert.deepEqual(r.api.reactions, [{ chat_id: GROUP, message_id: 321, reaction: [{ type: 'emoji', emoji: '👍' }] }]);
+    assert.equal(r.api.sent.length, 0, 'no echo message');
+  });
+
+  it('accepts the bot key in any case and the telegram:-prefixed chat id', async () => {
+    const r = await rig();
+    assert.equal((await ack(r, `telegram:${String(GROUP)}`, '5', BOT_KEY.toUpperCase())).outcome, 'reacted');
+    assert.equal(r.api.reactions[0]?.['chat_id'], GROUP);
+  });
+
+  it('never reacts as another identity: a foreign or empty key is not_permitted and nothing is set', async () => {
+    const r = await rig();
+    for (const key of ['tg:4242', '@ColleagueBot', '']) {
+      const out = await ack(r, String(GROUP), '5', key);
+      assert.equal(out.outcome === 'unreachable' && out.code, 'not_permitted', key);
+    }
+    assert.equal(r.api.reactions.length, 0);
+  });
+
+  it('a non-Telegram chat or message id is no_binding; a group the bot is not activated in is not_permitted', async () => {
+    const r = await rig();
+    const a = await ack(r, '19:abc@thread.tacv2', '5');
+    assert.equal(a.outcome === 'unreachable' && a.code, 'no_binding');
+    for (const messageId of ['1700000000.123', 'abc', '0', '-3']) {
+      const b = await ack(r, String(GROUP), messageId);
+      assert.equal(b.outcome === 'unreachable' && b.code, 'no_binding', messageId);
+    }
+    const inactive = await rig({ activate: false });
+    const c = await ack(inactive, String(GROUP), '5');
+    assert.equal(c.outcome === 'unreachable' && c.code, 'not_permitted');
+    assert.equal(r.api.reactions.length + inactive.api.reactions.length, 0);
+  });
+
+  it('a reaction the chat does not allow, a deleted message, any Bot API failure: channel_error with the platform message, never thrown', async () => {
+    for (const failure of [
+      'Telegram API setMessageReaction failed: Bad Request: REACTION_INVALID (code=400)',
+      'Telegram API setMessageReaction failed: Bad Request: message to react not found (code=400)',
+      'Telegram API setMessageReaction failed: Too Many Requests: retry after 3 (code=429)',
+    ]) {
+      const r = await rig({ failWith: failure });
+      const out = await ack(r, String(GROUP), '5');
+      assert.deepEqual(out, { outcome: 'unreachable', code: 'channel_error', message: failure });
+    }
+  });
+
+  it('reacts in a person\'s chat with the bot only when the DM policy allows that chat', async () => {
+    const r = await rig({ dmPolicy: 'pairing' });
+    const blocked = await ack(r, '9', '5');
+    assert.equal(blocked.outcome === 'unreachable' && blocked.code, 'not_permitted');
+    const open = await rig();
+    assert.equal((await ack(open, '9', '5')).outcome, 'reacted');
   });
 });

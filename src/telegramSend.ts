@@ -19,30 +19,54 @@
  *    its `created` events, `replyToMessageId` and `addressedToBot`.
  *  - no `mentions` (the kernel then leaves the text plain), no `aiLabel`
  *    (the kernel puts the disclosure line into the text itself).
+ *  - `reactions` (conversation send only, spec 2043 §5.14): `react` sets the
+ *    bot's 👍 on a message via the Bot API `setMessageReaction`
+ *    (https://core.telegram.org/bots/api#setmessagereaction), as exactly the
+ *    bot `asChannelKey` names. The message is addressed the way the inbound
+ *    event reported it: `conversationId` = the chat id, `messageId` = the
+ *    Telegram `message_id`. A bot sets at most one reaction per message; a
+ *    chat whose available reactions exclude 👍 answers an error, returned as
+ *    `channel_error`.
  *
  * Unreachability is RETURNED, never thrown.
  */
 
 import { evaluateDmPolicy, type DmPolicy } from './dmPolicyGuard.js';
 import type {
+  ConversationReactionOutcome,
   ConversationSendProvider,
   SendProviderCapabilities,
   TargetedDeliveryOutcome,
   TargetedMessage,
   TargetedSendProvider,
 } from '@omadia/channel-sdk';
+import type { ConversationReaction } from '@omadia/plugin-api';
 
 import type { PairingStore } from './pairingStore.js';
+import type { TelegramApiClient } from './telegramBot.js';
 import type { TelegramEmitter } from './telegramEmitter.js';
 
 export const TELEGRAM_SEND_CHANNEL_TYPE = 'telegram';
 
-/** What the providers declare: the own identity, nothing else. */
+/** What the targeted send declares: the own identity, nothing else. */
 export const TELEGRAM_SEND_CAPABILITIES: SendProviderCapabilities = Object.freeze({ asChannelKey: true });
+
+/** What the conversation send declares: the own identity and reactions. */
+export const TELEGRAM_CONVERSATION_SEND_CAPABILITIES: SendProviderCapabilities = Object.freeze({
+  asChannelKey: true,
+  reactions: true,
+});
+
+/** The platform form of each kernel reaction: Telegram's thumbs-up. */
+export const TELEGRAM_REACTION_EMOJI: Readonly<Record<ConversationReaction, string>> = Object.freeze({
+  acknowledge: '👍',
+});
 
 /** One bot the providers can post as. */
 export interface TelegramSendDeps {
   readonly emitter: Pick<TelegramEmitter, 'sendPosted' | 'sendAnswer' | 'sendSystem'>;
+  /** This bot's Bot API client, for what is not a message (reactions). */
+  readonly api: Pick<TelegramApiClient, 'setMessageReaction'>;
   readonly pairingStore: PairingStore;
   readonly dmPolicy: DmPolicy;
   /** `tg:<botId>`. */
@@ -144,13 +168,34 @@ class TelegramPoster {
       return classifyPostError(err, isDirect);
     }
   }
+
+  async react(chatId: number, messageId: number, emoji: string): Promise<ConversationReactionOutcome> {
+    try {
+      await this.deps.api.setMessageReaction({
+        chat_id: chatId,
+        message_id: messageId,
+        reaction: [{ type: 'emoji', emoji }],
+      });
+      return { outcome: 'reacted' };
+    } catch (err) {
+      // message gone, reaction not allowed in this chat, rate limit: the
+      // platform's own words, never thrown
+      return unreachable('channel_error', err instanceof Error ? err.message : String(err));
+    }
+  }
+}
+
+/** A Bot API `message_id`: a positive integer. */
+function parseMessageId(raw: string): number | undefined {
+  const bare = raw.trim();
+  return /^\d+$/.test(bare) && Number(bare) > 0 ? Number(bare) : undefined;
 }
 
 /** Post INTO a conversation (a group or the bot's own chat with a person). */
 export function createTelegramConversationSend(lookup: TelegramBotLookup): ConversationSendProvider {
   return {
     channelType: TELEGRAM_SEND_CHANNEL_TYPE,
-    supports: TELEGRAM_SEND_CAPABILITIES,
+    supports: TELEGRAM_CONVERSATION_SEND_CAPABILITIES,
     async sendToConversation(conversationId, message, opts) {
       const poster = posterFor(lookup, opts?.asChannelKey);
       if (!(poster instanceof TelegramPoster)) return poster;
@@ -159,6 +204,23 @@ export function createTelegramConversationSend(lookup: TelegramBotLookup): Conve
       const blocked = await poster.canPostTo(chatId);
       if (blocked) return blocked;
       return poster.post(chatId, message, chatId > 0);
+    },
+    async react(conversationId, messageId, reaction, opts) {
+      // as exactly the bot the key names: the key is required here, so no
+      // key never falls back to the installation's own bot
+      const poster = posterFor(lookup, opts.asChannelKey);
+      if (!(poster instanceof TelegramPoster)) return poster;
+      const chatId = parseChatId(conversationId);
+      if (chatId === undefined) return unreachable('no_binding', `'${conversationId}' is not a Telegram chat id`);
+      const telegramMessageId = parseMessageId(messageId);
+      if (telegramMessageId === undefined) {
+        return unreachable('no_binding', `'${messageId}' is not a Telegram message id`);
+      }
+      const emoji = TELEGRAM_REACTION_EMOJI[reaction] as string | undefined;
+      if (emoji === undefined) return unreachable('channel_error', `Telegram has no form for the reaction '${String(reaction)}'`);
+      const blocked = await poster.canPostTo(chatId);
+      if (blocked) return blocked;
+      return poster.react(chatId, telegramMessageId, emoji);
     },
   };
 }

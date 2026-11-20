@@ -46,6 +46,8 @@ export {
   type TelegramConversationMessageSink,
 } from './conversationMessages.js';
 export {
+  TELEGRAM_CONVERSATION_SEND_CAPABILITIES,
+  TELEGRAM_REACTION_EMOJI,
   TELEGRAM_SEND_CAPABILITIES,
   classifyPostError,
   createTelegramConversationSend,

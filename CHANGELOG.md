@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+Bot reactions (spec 2043 §5.14, byte5ai/omadia#2061; decision record ADR 0027,
+kernel PR byte5ai/omadia#2151). Needs `@omadia/channel-sdk` 0.3.9 and
+`@omadia/plugin-api` 1.82.0; an older kernel never calls `react` and the
+plugin behaves as before.
+
+- **A thumbs-up instead of an echo**: the conversation send provider
+  implements `react` and declares `supports.reactions: true`. The reaction
+  `acknowledge` is set as 👍 with the Bot API `setMessageReaction`
+  (https://core.telegram.org/bots/api#setmessagereaction) on `chat_id` =
+  the inbound event's `conversationId`, `message_id` = its `messageId`.
+- **As exactly the bot `asChannelKey` names** (the installation's bot or an
+  agent's own bot); an unknown key is `not_permitted` and nothing is set
+  through another bot. Same chat gate as posting: a group must have activated
+  that bot, a private chat must pass the DM policy.
+- **Never thrown**: a chat whose available reactions exclude 👍, a deleted
+  message or a rate limit is `unreachable` / `channel_error` with Telegram's
+  message; a non-Telegram chat or message id is `no_binding`.
+- No new permission: outbound `api.telegram.org` was already declared; the
+  manifest lists `setMessageReaction` among the Bot API methods used.
+
 ## 0.5.0
 
 An agent's own Telegram bot (byte5ai/omadia#2042, spec §5.3, §8 item 20).

@@ -37,12 +37,15 @@ export interface RecordingApi {
   readonly sent: SentCall[];
   readonly actions: string[];
   readonly callbackAnswers: Array<Record<string, unknown>>;
+  /** Every `setMessageReaction` call, in order. */
+  readonly reactions: Array<Record<string, unknown>>;
 }
 
 export function recordingApi(): RecordingApi {
   const sent: SentCall[] = [];
   const actions: string[] = [];
   const callbackAnswers: Array<Record<string, unknown>> = [];
+  const reactions: Array<Record<string, unknown>> = [];
   const record =
     (method: SentCall['method']) =>
     async (params: Record<string, unknown>) => {
@@ -61,8 +64,12 @@ export function recordingApi(): RecordingApi {
       callbackAnswers.push(p);
       return true;
     },
+    setMessageReaction: async (p: Record<string, unknown>) => {
+      reactions.push(p);
+      return true;
+    },
   } as unknown as TelegramApiClient;
-  return { client, sent, actions, callbackAnswers };
+  return { client, sent, actions, callbackAnswers, reactions };
 }
 
 export const BOT_ID = 999;
