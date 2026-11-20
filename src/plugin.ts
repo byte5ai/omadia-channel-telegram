@@ -44,8 +44,13 @@ import { GroupMemberTracker } from './groupMemberTracker.js';
 import { registerBotCommands } from './botCommands.js';
 import { TelegramConversationRosterProvider } from './conversationRoster.js';
 import { PersistentSpeakerHistoryStore } from './speakerHistory.js';
+import { TelegramConversationMessages } from './conversationMessages.js';
+import { OpenCardStore } from './openCards.js';
+import { createTelegramConversationSend, createTelegramTargetedSend } from './telegramSend.js';
+import { TelegramEmitter } from './telegramEmitter.js';
 import {
   TELEGRAM_ALLOWED_UPDATES,
+  TELEGRAM_CHANNEL_TYPE,
   TelegramApiClient,
   TelegramBot,
   type TelegramUpdate,
@@ -191,10 +196,41 @@ export async function activate(
       : 'channelResolver@1 not published — Telegram routes all turns to the default chatAgent',
   );
 
+  // --- Posting for agents and collecting answers (spec 2042 criterion 30) ---
+  // Optional kernel seams, feature-detected: older kernels keep activating.
+  // Inbound events need both the emitter and the subscription lookup; without
+  // them the send providers declare no poll and no card.
+  const botUsername = me.username ?? '';
+  const emitConversationMessage = core.emitConversationMessage?.bind(core);
+  const isAllMessagesSubscribed = core.isAllMessagesSubscribed?.bind(core);
+  const conversationDelivery = core.conversationDelivery?.bind(core);
+  const conversationMessages =
+    emitConversationMessage && isAllMessagesSubscribed && botUsername
+      ? new TelegramConversationMessages(
+          {
+            isAllMessagesSubscribed: (conversationId, channelKey) =>
+              isAllMessagesSubscribed(TELEGRAM_CHANNEL_TYPE, conversationId, channelKey),
+            ...(conversationDelivery
+              ? {
+                  conversationDelivery: (conversationId: string, channelKey: string) =>
+                    conversationDelivery(TELEGRAM_CHANNEL_TYPE, conversationId, channelKey),
+                }
+              : {}),
+            // The catalog id is authoritative here; the adapter cannot know it.
+            emit: (event) =>
+              emitConversationMessage({ ...event, channelId: ctx.agentId, channelType: TELEGRAM_CHANNEL_TYPE }),
+          },
+          botUsername,
+        )
+      : undefined;
+  const openCards = new OpenCardStore(memoryStore);
+
   const bot = new TelegramBot({
     api,
     chatAgent,
     channelResolver,
+    openCards,
+    ...(conversationMessages ? { conversationMessages } : {}),
     history: conversationHistoryStore,
     turnContext,
     rosterProvider: (chatId) => rosterProvider.forChat(chatId),
@@ -210,6 +246,25 @@ export async function activate(
     // matching via text_mention entities + reply detection.
     botIdentity: { id: me.id, username: me.username ?? '' },
   });
+
+  if (core.registerConversationSendProvider || core.registerTargetedSendProvider) {
+    const sendDeps = {
+      emitter: new TelegramEmitter({ api, speakerHistory }),
+      openCards,
+      pairingStore,
+      dmPolicy,
+      botUsername,
+      canCollectAnswers: conversationMessages !== undefined,
+    };
+    core.registerConversationSendProvider?.(ctx.agentId, createTelegramConversationSend(sendDeps));
+    core.registerTargetedSendProvider?.(ctx.agentId, createTelegramTargetedSend(sendDeps));
+    core.log(
+      'info',
+      `telegram send providers registered (own-identity posts as @${botUsername || '<unknown>'}, polls and cards ${conversationMessages ? 'as numbered text with typed answers' : 'not offered: kernel lacks the inbound events'})`,
+    );
+  } else {
+    core.log('info', 'kernel has no send providers — agents cannot post through Telegram');
+  }
 
   // Mount the webhook router unconditionally — even when running in LP
   // mode, a future operator update can flip TELEGRAM_PUBLIC_BASE_URL +

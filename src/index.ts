@@ -16,6 +16,7 @@ export {
   TelegramBot,
   TELEGRAM_PACE_PROFILE,
   telegramTurnOrigin,
+  telegramUserRef,
   type TelegramBotOptions,
   type TelegramUpdate,
   type TelegramMessage,
@@ -37,6 +38,24 @@ export {
 export { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
 export { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 export { BOT_COMMANDS, registerBotCommands } from './botCommands.js';
+export { resolveAgentForTurn, type AgentResolution, type ChannelResolverLookup } from './agentResolution.js';
+export { OpenCardStore, type OpenCard } from './openCards.js';
+export {
+  TelegramConversationMessages,
+  isOwnBotKey,
+  telegramBotKey,
+  type TelegramConversationMessageSink,
+} from './conversationMessages.js';
+export {
+  ANSWER_HINT,
+  TELEGRAM_CARD_KINDS,
+  classifyPostError,
+  createTelegramConversationSend,
+  createTelegramTargetedSend,
+  pollAsCard,
+  telegramSendCapabilities,
+  type TelegramSendDeps,
+} from './telegramSend.js';
 export {
   TelegramConversationRosterProvider,
   type TelegramConversationRosterDeps,

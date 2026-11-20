@@ -100,6 +100,27 @@ export class TelegramEmitter {
   }
 
   /**
+   * A message the kernel posts on an agent's behalf (conversation or targeted
+   * send): the bot IS that agent's identity, so the text goes out as it is,
+   * with no name line. Returns the Bot API `message_id` of the text, which a
+   * posted question is matched by.
+   */
+  async sendPosted(
+    chatId: number,
+    message: { readonly text: string; readonly attachments?: SemanticAnswer['attachments'] },
+  ): Promise<number | undefined> {
+    this.assertDecorationsDeclared();
+    const messageId =
+      message.text.trim().length > 0
+        ? await this.sendHtmlOrPlain(chatId, markdownToTelegramHtml(message.text), 'agent')
+        : undefined;
+    for (const attachment of message.attachments ?? []) {
+      await this.sendAttachment(chatId, attachment, 'agent');
+    }
+    return messageId;
+  }
+
+  /**
    * A notice with speaker `system`: the management layer's or this plugin's
    * own (pairing, group activation, errors). Plain text, never an agent's
    * name, never markup.
@@ -150,9 +171,10 @@ export class TelegramEmitter {
     chatId: number,
     html: string,
     speaker: EmissionRecord['speaker'],
-  ): Promise<void> {
+  ): Promise<number> {
+    let sent: { message_id: number };
     try {
-      await this.opts.api.sendMessage({
+      sent = await this.opts.api.sendMessage({
         chat_id: chatId,
         text: html,
         parse_mode: 'HTML',
@@ -164,13 +186,14 @@ export class TelegramEmitter {
       console.warn(
         `[telegram] HTML parse rejected by Telegram → retrying as plain text. detail=${msg}`,
       );
-      await this.opts.api.sendMessage({
+      sent = await this.opts.api.sendMessage({
         chat_id: chatId,
         text: stripHtml(html),
         disable_web_page_preview: true,
       });
     }
     this.opts.onEmit?.({ chatId, speaker, kind: 'text' });
+    return sent.message_id;
   }
 
   private assertDecorationsDeclared(): void {

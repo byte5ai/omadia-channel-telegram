@@ -26,6 +26,7 @@ import {
   DEFAULT_PACE_PROFILE,
   InMemorySpeakerHistoryStore,
   channelUserPrincipal,
+  parseCardReply,
   parsePrincipal,
   runPacedTurn,
   turnPrincipal,
@@ -53,6 +54,8 @@ import {
   type SpeakerHistoryReader,
 } from './telegramEmitter.js';
 import { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
+import type { OpenCardStore } from './openCards.js';
+import type { TelegramConversationMessages } from './conversationMessages.js';
 
 // ---------------------------------------------------------------------------
 // Bot API envelope — narrow shapes for the fields we read
@@ -485,6 +488,10 @@ export interface TelegramBotOptions {
    * a process-local store; the plugin passes a persistent one.
    */
   speakerHistory?: SpeakerHistoryReader;
+  /** Questions posted as text and still open; answers are matched here. */
+  openCards?: OpenCardStore;
+  /** Inbound events for native facilitators and card answers; feature-detected in plugin.ts. */
+  conversationMessages?: TelegramConversationMessages;
   /** Pace profile; default: SDK acknowledgement threshold, typing renewed every 4 s. */
   paceProfile?: ChannelPaceProfile;
   /** Timer seam for tests. */
@@ -560,6 +567,8 @@ export class TelegramBot {
   private readonly dmPolicy: DmPolicy;
   private readonly botIdentity: { id: number; username: string };
   private readonly channelResolver?: ChannelResolverLookup;
+  private readonly openCards?: OpenCardStore;
+  private readonly conversationMessages?: TelegramConversationMessages;
   constructor(opts: TelegramBotOptions) {
     this.api = opts.api;
     this.chatAgent = opts.chatAgent;
@@ -581,6 +590,8 @@ export class TelegramBot {
     this.dmPolicy = opts.dmPolicy ?? 'pairing';
     this.botIdentity = opts.botIdentity;
     if (opts.channelResolver) this.channelResolver = opts.channelResolver;
+    if (opts.openCards) this.openCards = opts.openCards;
+    if (opts.conversationMessages) this.conversationMessages = opts.conversationMessages;
   }
 
   /** Single entry-point — dispatches on update.message / callback_query / my_chat_member. */
@@ -817,7 +828,12 @@ export class TelegramBot {
       // every group message reaches the bot and would echo back). Even
       // with privacy-on this filter is a safe defense against legacy-
       // group server-side delivery quirks.
-      if (!this.isBotAddressedInGroup(message)) {
+      const isAddressed = this.isBotAddressedInGroup(message);
+      // A typed answer to a question the bot posted, and the record for a
+      // facilitation the kernel subscribed to, come before the mention gate:
+      // both concern messages that need not mention the bot.
+      if (await this.handleInboundForEngine(message, isAddressed)) return;
+      if (!isAddressed) {
         console.log(
           `[telegram] group message ignored chat=${String(message.chat.id)} — not addressed (no @-mention, no reply, no /cmd@bot)`,
         );
@@ -832,6 +848,8 @@ export class TelegramBot {
           ? message.entities
           : message.caption_entities;
       userMessage = this.stripBotMention(text, stripEntities);
+    } else if (await this.handleInboundForEngine(message, true)) {
+      return;
     }
 
     // A typed number or label answers the question the agent just asked
@@ -848,6 +866,86 @@ export class TelegramBot {
       userMessage,
       attachments: inboundImages,
     });
+  }
+
+  /**
+   * The two inbound paths that are not a turn (spec 2042 criterion 30):
+   *
+   *  1. a typed answer to a question the bot posted as text (a poll or card);
+   *  2. a message of a conversation the kernel subscribed an agent to
+   *     (`all`: the engine drives, the adapter starts no turn; `addressed`:
+   *     what addresses the bot is recorded and the ordinary turn still runs).
+   *
+   * Returns true when the message is consumed and no turn must start.
+   */
+  private async handleInboundForEngine(message: TelegramMessage, isAddressed: boolean): Promise<boolean> {
+    if (await this.handleCardReply(message)) return true;
+    const messages = this.conversationMessages;
+    if (!messages) return false;
+    const mode = messages.delivery(message.chat.id);
+    if (mode === 'none') return false;
+    const isRecorded = messages.emitCreated(message, mode, isAddressed);
+    if (mode !== 'all') return false;
+    console.log(
+      `[telegram] recorded for the engine, no turn chat=${String(message.chat.id)} recorded=${String(isRecorded)}`,
+    );
+    return true;
+  }
+
+  /**
+   * A reply to a posted question. A Telegram reply to the question's message
+   * is an answer in any chat, and a message that does not parse is told so; in
+   * a private chat the next message also answers the one open question, but
+   * only if it parses (otherwise it is an ordinary message to the agent).
+   */
+  private async handleCardReply(message: TelegramMessage): Promise<boolean> {
+    const openCards = this.openCards;
+    const messages = this.conversationMessages;
+    const from = message.from;
+    if (!openCards || !messages || !from || from.is_bot) return false;
+    const isPrivate = message.chat.type === 'private';
+    const replyTo = message.reply_to_message?.message_id;
+    const hit = await openCards.match({
+      chatId: message.chat.id,
+      isPrivate,
+      ...(replyTo !== undefined ? { replyToMessageId: replyTo } : {}),
+    });
+    if (!hit) return false;
+    const { card } = hit;
+    const chatId = message.chat.id;
+    if (messages.delivery(chatId) === 'none') return false;
+    if (hit.isClosed) {
+      await this.emitter.sendSystem(chatId, 'Diese Frage ist beendet, die Antwort zählt nicht mehr.');
+      return true;
+    }
+    const entities = message.text != null ? message.entities : message.caption_entities;
+    const reply = this.stripBotMention((message.text ?? message.caption ?? '').trim(), entities);
+    const parsed = parseCardReply(card.question, reply);
+    if (!parsed.ok) {
+      if (replyTo === undefined) return false;
+      await this.emitter.sendSystem(
+        chatId,
+        'Das habe ich nicht als Antwort auf die Frage verstanden. Antworte bitte so, wie es in der Frage steht, zum Beispiel mit der Nummer.',
+      );
+      return true;
+    }
+    if (!card.changeable && card.answeredBy.includes(from.id)) {
+      await this.emitter.sendSystem(chatId, 'Du hast hier schon geantwortet, und die Antwort lässt sich nicht mehr ändern.');
+      return true;
+    }
+    const isRecorded = messages.emitCardAnswer(message, {
+      cardId: card.cardId,
+      kind: card.kind,
+      answers: [parsed.value],
+      ...(card.proposalId !== undefined ? { proposalId: card.proposalId } : {}),
+      ...(card.proposalVersion !== undefined ? { proposalVersion: card.proposalVersion } : {}),
+    });
+    if (!isRecorded) return false;
+    openCards.markAnswered(card, from.id);
+    // A private chat has no one else to see the vote; a group answers silently
+    // (the engine reports the result), so a poll adds no chatter per vote.
+    if (isPrivate) await this.emitter.sendSystem(chatId, 'Danke, deine Antwort ist erfasst.');
+    return true;
   }
 
   /**
