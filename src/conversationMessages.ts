@@ -18,13 +18,18 @@
  * text. A bot is never an author. An event is not a turn, and a failure to
  * emit never breaks the message that carried it.
  *
+ * A vote in a native poll the bot posted for the kernel (`poll_answer`) is a
+ * `card_answer` event: `cardAnswer: { cardId: <kernel pollId>, value:
+ * { optionId } }`, `messageId` = the poll's `message_id` (telegramPolls.ts).
+ *
  * Not handled: edits and deletions (Telegram sends `edited_message` only when
  * asked for it, and never tells a bot about a deletion), reactions.
  */
 
 import type { ConversationMessageEvent } from '@omadia/channel-sdk';
 
-import type { TelegramMessage, TelegramUser } from './telegramBot.js';
+import type { TelegramMessage, TelegramPollAnswer, TelegramUser } from './telegramBot.js';
+import { chosenOptionIds, type PostedPoll } from './telegramPolls.js';
 
 export const TELEGRAM_EVENT_CHANNEL_TYPE = 'telegram';
 /** Replaced with the catalog id by plugin.ts; the adapter cannot know it. */
@@ -147,6 +152,38 @@ export class TelegramConversationMessages {
     } finally {
       if (timer) clearTimeout(timer);
     }
+  }
+
+  /**
+   * A vote in a native poll this bot posted (`poll` is what was remembered
+   * for `answer.poll_id`). Reported only with a person as author, with every
+   * chosen option known, and never for a retracted vote (no options). Returns
+   * whether an event went out.
+   */
+  emitPollAnswer(answer: TelegramPollAnswer, poll: PostedPoll, now: Date = new Date()): boolean {
+    if (this.delivery(poll.chatId) === 'none') return false;
+    const author = telegramAuthor(answer.user);
+    if (!author) return false;
+    if (answer.option_ids.length === 0) {
+      console.log(`[telegram] retracted vote in poll ${poll.pollId} not reported (the kernel has no form for it)`);
+      return false;
+    }
+    const chosen = chosenOptionIds(poll, answer.option_ids);
+    if (!chosen) return false;
+    const value = chosen.length === 1 ? { optionId: chosen[0] } : { optionIds: chosen };
+    return this.send({
+      channelId: CHANNEL_ID_PLACEHOLDER,
+      channelType: TELEGRAM_EVENT_CHANNEL_TYPE,
+      conversationId: String(poll.chatId),
+      conversationType: poll.chatId > 0 ? 'direct' : 'group',
+      receivedByChannelKey: telegramBotKey(this.botId),
+      messageId: String(poll.messageId),
+      revision: 0,
+      kind: 'card_answer',
+      author,
+      cardAnswer: { cardId: poll.pollId, value, answererVerified: true },
+      occurredAt: now.toISOString(),
+    });
   }
 
   private send(event: ConversationMessageEvent): boolean {

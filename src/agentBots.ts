@@ -120,13 +120,18 @@ export class TelegramBotFleet {
     return this.agentBots.get(asChannelKey)?.sendDeps;
   }
 
+  /** The bot with exactly this key; no key = the installation's own bot. */
+  runtimeFor(channelKey: string | undefined): TelegramBotRuntime | undefined {
+    const key = channelKey?.trim().toLowerCase();
+    return key === undefined || key === this.defaultBot.botKey ? this.defaultBot : this.agentBots.get(key);
+  }
+
   /** The roster as the bot `asChannelKey` sees it; no key = the installation's own bot. */
   rosterProvider(): ConversationRosterProvider {
     return {
       channelType: TELEGRAM_CHANNEL_TYPE,
       getRoster: (conversationId: string, opts?: ConversationRosterRequest): Promise<ConversationRoster | undefined> => {
-        const key = opts?.asChannelKey?.trim().toLowerCase();
-        const runtime = key === undefined || key === this.defaultBot.botKey ? this.defaultBot : this.agentBots.get(key);
+        const runtime = this.runtimeFor(opts?.asChannelKey);
         return runtime ? runtime.roster.getRoster(conversationId, opts) : Promise.resolve(undefined);
       },
     };
