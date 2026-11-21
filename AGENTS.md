@@ -39,3 +39,34 @@ the built `dist/`, so build first).
   may not post to is `not_permitted`.
 - No extra Telegram permission is needed; outbound host stays
   `api.telegram.org`.
+
+### Native facilitators: readiness, polls, membership (#8, spec 2043 §6.4)
+
+- **Context**: the kernel refuses a facilitation on a channel without a
+  readiness provider, reports a text-only baseline without a meeting source
+  (so the facilitator never posts polls), and needs joins and leaves for its
+  electorate. Telegram's privacy mode, poll model and update kinds limit what
+  can be promised.
+- **Decision**:
+  - Readiness is `ready` for an activated group where the bot is a member,
+    may post, and is an administrator or has privacy mode off. Privacy off
+    without admin rights is `ready` with `verified: false`: the setting only
+    applies after the bot is re-added, which the Bot API cannot show. Messages
+    are written for the person who has to fix it (the facilitator relays them).
+  - Native polls on the conversation send only (DMs stay text). Text first,
+    then a non-anonymous single-choice poll: `SendPoll` carries no method, and
+    a multiple-answer poll would let a single-choice voter cast a ballot the
+    engine refuses. A poll Telegram refuses after the text is out leaves the
+    text (written ballots still count) and is reported delivered without
+    `cardMessageId`. Labels are clipped to Telegram's limits, never refused.
+    Poll ids are stored per bot in the memory store so votes map after a
+    restart. Retracted votes and votes by an anonymous admin are not reported.
+  - Membership events: one `TelegramMembershipEvents` per installation, so a
+    change seen by several bots or by notice and `chat_member` goes out once
+    (same chat, person, direction within 60 s). Bots are never members.
+    `bot_present` is not emitted (no consumer needs it yet).
+- **Consequence**: a Telegram facilitation needs the bot to be admin or
+  privacy-off-and-re-added; README lists every gap with the closest
+  behaviour. Multi-choice native polls need a kernel change (`SendPoll`
+  saying single or multiple).
+
