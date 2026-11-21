@@ -57,6 +57,8 @@ import { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 import type { ChannelRouteLookup } from './agentResolution.js';
 import { createTelegramConversationSend, createTelegramTargetedSend } from './telegramSend.js';
 import { TelegramApiClient } from './telegramBot.js';
+import { TelegramMembershipEvents } from './membershipEvents.js';
+import { createTelegramMeetingSource, createTelegramReadinessProvider } from './telegramReadiness.js';
 
 export async function activate(
   ctx: PluginContext,
@@ -147,6 +149,12 @@ export async function activate(
   const pairingStore = new PairingStore(memoryStore);
   const speakerHistory = new PersistentSpeakerHistoryStore(memoryStore);
   core.log('info', 'telegram pairing store ready (memoryStore-backed)');
+  // Joins and leaves for the kernel (#330 B2, spec 2043 §5.5). One instance
+  // for every bot: a change several bots see goes out once.
+  const emitConversationEvent = core.emitConversationEvent?.bind(core);
+  const membershipEvents = emitConversationEvent
+    ? new TelegramMembershipEvents((event) => emitConversationEvent({ ...event, channelId: ctx.agentId }))
+    : undefined;
 
   // --- Per-turn agent resolution (S1 contract) --------------------------
   // The SDK's `resolveChannelRoute` asks `channelResolver@1` on every turn:
@@ -175,6 +183,7 @@ export async function activate(
     pairingTokens,
     speakerHistory,
     memberTracker,
+    membershipEvents,
     webhookSecret,
     publicBaseUrl: publicBaseUrl || undefined,
     ...(routines ? { routines } : {}),
@@ -193,6 +202,20 @@ export async function activate(
     core.log('info', 'kernel has no roster registry — conversation roster not registered');
   }
 
+  // Native facilitators (#2043, issue #8): can the bot `asChannelKey` moderate
+  // a group (activated, reads every message, may post), and what a group
+  // offers (text and native polls). Without a readiness provider the kernel
+  // refuses every facilitation on Telegram.
+  const runtimeFor = (key: string | undefined) => fleet.runtimeFor(key);
+  if (typeof core.registerReadinessProvider === 'function') {
+    core.registerReadinessProvider(ctx.agentId, createTelegramReadinessProvider(runtimeFor));
+  }
+  core.registerMeetingSourceProvider?.(ctx.agentId, createTelegramMeetingSource(runtimeFor));
+  core.log(
+    'info',
+    `native facilitators: readiness=${typeof core.registerReadinessProvider === 'function' ? 'on' : 'kernel<2043'}, meetingSource=${typeof core.registerMeetingSourceProvider === 'function' ? 'on' : 'kernel<2043'}, membershipEvents=${membershipEvents ? 'on' : 'kernel<B1'}`,
+  );
+
   // Native "/" menu of the installation's own bot: /agent, /agents. The
   // agent behind the resolver carries them out; the channel passes the text
   // on unchanged. Agents' own bots get no menu: there is nothing to choose.
@@ -207,7 +230,7 @@ export async function activate(
     core.registerTargetedSendProvider?.(ctx.agentId, createTelegramTargetedSend(lookup));
     core.log(
       'info',
-      `telegram send providers registered (posts as ${defaultBot.botKey} or an agent's own bot; polls and cards are posted as text by the kernel)`,
+      `telegram send providers registered (posts as ${defaultBot.botKey} or an agent's own bot; native polls; cards are posted as text by the kernel)`,
     );
   } else {
     core.log('info', 'kernel has no send providers — agents cannot post through Telegram');

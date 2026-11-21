@@ -135,8 +135,10 @@ playbook:
     Ohne eigenen Bot werden Agenten per `/agent <Name>` gewählt (`/agent` ohne Namen löscht die Auswahl,
     `/agents` listet; der Agent hinter dem Resolver führt es aus, der Kanal reicht
     nur den Text durch). Fragen und Abstimmungen eines Agenten kommen als
-    nummerierter Klartext und werden per Antwort auf die Nachricht beantwortet.
-    Einen erfassten Beitrag bestätigt ein Agent still mit einer 👍-Reaktion
+    nummerierter Klartext und werden per Antwort auf die Nachricht beantwortet;
+    eine Abstimmung eines Moderators geht zusätzlich als native Telegram-Umfrage
+    (sendPoll, nicht anonym, Einfachauswahl) raus, deren Stimmen beim Kernel
+    ankommen (poll_answer). Einen erfassten Beitrag bestätigt ein Agent still mit einer 👍-Reaktion
     auf die Nachricht (setMessageReaction, als genau der Bot des Agenten)
     statt mit einer Echo-Nachricht.
 
@@ -161,7 +163,7 @@ permissions:
 integrations:
   - id: "telegram_bot_api"
     kind: "http"
-    target: "Telegram Bot API (sendMessage, getUpdates, setWebhook, setMyCommands, getChatAdministrators, setMessageReaction)"
+    target: "Telegram Bot API (sendMessage, sendPoll, getUpdates, setWebhook, setMyCommands, getMe, getChatAdministrators, getChatMember, getChatMemberCount, setMessageReaction)"
     auth_from: "telegram_bot_token"
     docs: "https://core.telegram.org/bots/api"
 
