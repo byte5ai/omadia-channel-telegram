@@ -165,16 +165,33 @@ plugin has no card code. What it provides for that:
 
 - A conversation send and a targeted send (DM) provider that declare
   `asChannelKey` (and, on the conversation send, `reactions` and `poll`): no
-  `card` (so the kernel posts it as text), no poll in a DM (the kernel posts
-  it as text), no mentions. The `messageId` a send reports is the Telegram
+  `card` (so the kernel posts it as text), no poll on the targeted send (a DM
+  to one person: the kernel posts it as text), no mentions. The conversation
+  send posts native polls into any chat it reaches, the bot's private chat
+  with a person included. The `messageId` a send reports is the Telegram
   `message_id`; a reply points at it.
-- **Native polls** in groups: the message text (with the hint for a written
-  ballot) goes out first, then a non-anonymous, single-choice Telegram poll
+- **Native polls** on the conversation send: the message text (with the hint
+  for a written ballot) goes out first, then a non-anonymous Telegram poll
   ([`sendPoll`](https://core.telegram.org/bots/api#sendpoll)); the poll's
   `message_id` is `cardMessageId`. A vote (`poll_answer`) reaches the kernel
   as a `card_answer` event with `cardAnswer: { cardId: <pollId>, value:
   { optionId } }` and the voter as author. Written ballots in the chat count
-  as well.
+  as well. One person's answers in one poll reach the kernel in the order
+  Telegram sent them.
+  - **Approval votes**: a poll with `multipleAnswers: true` (plugin-api
+    1.84.0 / channel-sdk 0.3.10, omadia#2155) goes out as a multiple-answer
+    poll and every answer is `{ optionIds }`. Without the flag a poll is
+    single choice.
+  - **Runoff rounds**: a poll whose `pollId` shares the step part (everything
+    before the last `:`, the facilitator's `<stepId>:<round>`) with an open
+    poll of the same chat stops that older poll first
+    ([`stopPoll`](https://core.telegram.org/bots/api#stoppoll)), best-effort:
+    a failure is logged and never fails the send.
+  - **A poll Telegram refuses** after the text went out is followed by the
+    options as text (`A — Berlin`, …) for written ballots; the send is
+    reported delivered without `cardMessageId`.
+  - Poll records are deleted when a poll is stopped or replaced, dropped
+    after 30 days, and at most 20 open polls are kept per chat.
 - **Reactions instead of echoes** (spec 2043 §5.14): the conversation send
   implements `react`, so a facilitator records a contribution quietly with a
   👍 on the person's message instead of posting an echo. It calls the Bot API
@@ -234,10 +251,12 @@ the agent's page, `tg:<botId>`). What the plugin gives the kernel for that:
 
 | Requirement | Telegram | Closest behaviour |
 |---|---|---|
-| Every group message reaches the facilitator | With privacy mode **on** (BotFather default) a bot gets only mentions, commands, replies to it and service messages | Make the facilitator's bot an **administrator** of the group (admins get every message), or `/setprivacy` → Disable in @BotFather and then **remove and re-add** the bot (the setting applies from the next join). Readiness says `consent_missing` until one of the two holds; privacy off without admin rights is reported `ready` with `verified: false`, because the Bot API cannot tell whether the bot was re-added |
+| Every group message reaches the facilitator | With privacy mode **on** (BotFather default) a bot gets only mentions, commands, replies to it and service messages | Make the facilitator's bot an **administrator** of the group (admins get every message), or `/setprivacy` → Disable in @BotFather and then **remove and re-add** the bot (the setting applies from the next join). Readiness says `consent_missing` until one of the two holds; privacy off without admin rights is reported `ready` with `verified: false`, because the Bot API cannot tell whether the bot was re-added, until the bot has read a message in the group that did not address it (process-local proof, gone after a restart) |
 | Several agent bots in one group with privacy off | Every bot sees every bare `/command` | Use `/command@Bot` (see `/agent` above) |
-| Ranked, multi-approval and other votes as polls | Telegram polls are single or multiple choice; the kernel's poll does not say which | Native polls are single choice; every other ballot (ranking, several approvals) is written in the chat, which the facilitator accepts in any case |
-| Polls in a private chat | Not declared on the DM send | The kernel posts the question as numbered text; reply with the number |
+| Approval votes as polls | Telegram polls are single or multiple choice; only a kernel with `SendPoll.multipleAnswers` (plugin-api 1.84.0, omadia#2155) says which | With the flag: a multiple-answer poll. **On an older kernel every poll is single choice, so in an approval vote one tap replaces a written multi-option ballot**; there is no robust signal in the poll itself (the hint text is not one), so write several approvals instead of tapping |
+| Ranked and other votes as polls | Telegram has no ranked poll | The facilitator posts no poll for them; the ballot is written in the chat |
+| Polls in a private chat | The targeted send (a DM to a person) declares no poll; the conversation send does | Targeted send: the kernel posts the question as numbered text, reply with the number. Conversation send into the bot's private chat: a native poll |
+| Closing a poll when its step or the facilitation ends | The kernel sends nothing for a poll on close (`updateCard` is for question cards, not polls), so the plugin cannot tell | A poll stays open until a newer round of the same step replaces it (then it is stopped). Taps in a closed step's poll are ignored by the facilitator (`poll_answer_stale`); the facilitator's result message says the vote is over |
 | Retracting a native vote | Telegram reports an empty answer | Not reported (the kernel has no form for "no answer"): the last ballot stays until it is changed |
 | Anonymous administrators | They vote as the chat, without a person | Not counted; vote as yourself or write the ballot |
 | Edits and deletions | Not delivered to this plugin (no `edited_message`; Telegram never reports deletions to bots) | Write a new message; the newest ballot counts |
