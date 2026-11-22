@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
 Native facilitators in Telegram (byte5ai/omadia-channel-telegram#8, epic
 byte5ai/omadia#2043, spec §5.3, §5.5, §6.4). Uses only contracts already in
