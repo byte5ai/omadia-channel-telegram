@@ -61,14 +61,14 @@ async function rig(opts: { dmPolicy?: DmPolicy; activate?: boolean; failWith?: s
 const texts = (r: Awaited<ReturnType<typeof rig>>): string[] => r.api.sent.map((s) => String(s.params['text']));
 
 describe('declared capabilities', () => {
-  it('declare the own identity, and reactions on the conversation send: no poll, no card, no mentions, no AI label', () => {
+  it('declare the own identity, and reactions and native polls on the conversation send: no card, no mentions, no AI label', () => {
     assert.deepEqual({ ...TELEGRAM_SEND_CAPABILITIES }, { asChannelKey: true });
-    assert.deepEqual({ ...TELEGRAM_CONVERSATION_SEND_CAPABILITIES }, { asChannelKey: true, reactions: true });
+    assert.deepEqual({ ...TELEGRAM_CONVERSATION_SEND_CAPABILITIES }, { asChannelKey: true, reactions: true, poll: true });
   });
 
-  it('the providers declare exactly that, so the kernel posts a card or poll as text itself', async () => {
+  it('the providers declare exactly that, so the kernel posts a card (and a poll in a DM) as text itself', async () => {
     const r = await rig();
-    assert.deepEqual({ ...r.conversation.supports }, { asChannelKey: true, reactions: true });
+    assert.deepEqual({ ...r.conversation.supports }, { asChannelKey: true, reactions: true, poll: true });
     assert.equal(typeof r.conversation.react, 'function', 'reactions are declared because react is implemented');
     assert.deepEqual({ ...r.targeted.supports }, { asChannelKey: true });
   });
@@ -121,7 +121,7 @@ describe('conversation send', () => {
 });
 
 describe('a card or poll that arrives anyway is refused, nothing half posted', () => {
-  it('conversation and targeted send both answer channel_error and post nothing', async () => {
+  it('conversation and targeted send both answer channel_error and post nothing (a bot without a poll store posts no poll)', async () => {
     const r = await rig();
     const card = { cardId: 'c', title: 't', questions: [{ id: 'q', kind: 'single_choice' as const, label: 'x', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] }] };
     const poll = { pollId: 'p', question: 'q', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] };

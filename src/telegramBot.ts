@@ -55,6 +55,9 @@ import {
 import type { TelegramRoutineTurn } from './telegramRoutines.js';
 import { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
 import { telegramBotKey, type TelegramConversationMessages } from './conversationMessages.js';
+import type { TelegramMembershipEvents } from './membershipEvents.js';
+import type { TelegramPollStore } from './telegramPolls.js';
+import { KeyedQueue } from './keyedQueue.js';
 
 // ---------------------------------------------------------------------------
 // Bot API envelope — narrow shapes for the fields we read
@@ -68,10 +71,12 @@ export interface TelegramUpdate {
   my_chat_member?: ChatMemberUpdated;
   /** Someone else's membership changed. Delivered only while the bot is an admin. */
   chat_member?: ChatMemberUpdated;
+  /** A vote in a non-anonymous poll this bot sent (https://core.telegram.org/bots/api#pollanswer). */
+  poll_answer?: TelegramPollAnswer;
 }
 
 /** The update kinds the bot subscribes to (`allowed_updates`). */
-export type TelegramUpdateKind = 'message' | 'callback_query' | 'my_chat_member' | 'chat_member';
+export type TelegramUpdateKind = 'message' | 'callback_query' | 'my_chat_member' | 'chat_member' | 'poll_answer';
 
 /** What `allowed_updates` asks Telegram for, polling and webhook alike. */
 export const TELEGRAM_ALLOWED_UPDATES: TelegramUpdateKind[] = [
@@ -79,7 +84,19 @@ export const TELEGRAM_ALLOWED_UPDATES: TelegramUpdateKind[] = [
   'callback_query',
   'my_chat_member',
   'chat_member',
+  'poll_answer',
 ];
+
+/**
+ * Bot API PollAnswer. `option_ids` empty = the voter retracted the vote.
+ * `voter_chat` instead of `user` = an anonymous administrator voted as the chat.
+ */
+export interface TelegramPollAnswer {
+  poll_id: string;
+  user?: TelegramUser;
+  voter_chat?: TelegramChat;
+  option_ids: number[];
+}
 
 /**
  * Subset of Bot-API ChatMemberUpdated. We only read the bot's own status
@@ -107,6 +124,8 @@ export interface ChatMember {
     | 'kicked';
   /** Set for `restricted`: whether the user is still in the chat. */
   is_member?: boolean;
+  /** Set for `restricted`: whether the user may send text messages. */
+  can_send_messages?: boolean;
 }
 
 export interface TelegramPhotoSize {
@@ -152,6 +171,8 @@ export interface TelegramMessage {
   new_chat_members?: TelegramUser[];
   /** Service message: this user left (or was removed from) the group. */
   left_chat_member?: TelegramUser;
+  /** Set on a message that carries a native poll (the answer to `sendPoll`). */
+  poll?: { id: string };
 }
 
 export interface TelegramMessageEntity {
@@ -187,6 +208,8 @@ export interface TelegramUser {
   last_name?: string;
   username?: string;
   language_code?: string;
+  /** `getMe` only: privacy mode is off, the bot receives every group message. */
+  can_read_all_group_messages?: boolean;
 }
 
 export interface TelegramChat {
@@ -258,6 +281,8 @@ export function telegramTurnOrigin(args: {
   readonly chatId?: number;
   /** The Bot API `message_id` this turn answers. */
   readonly messageId?: number;
+  /** The `message_id` the person replied to; stated on private turns only. */
+  readonly replyToMessageId?: number;
 }): TurnOriginShim {
   const isPrivate = args.chatType === 'private';
   const scope: ScopeId =
@@ -282,6 +307,9 @@ export function telegramTurnOrigin(args: {
     ...(conversationType ? { conversationType } : {}),
     ...(args.chatId !== undefined ? { channelConversationId: String(args.chatId) } : {}),
     ...(args.messageId !== undefined ? { messageId: String(args.messageId) } : {}),
+    // since channel-sdk 0.3.11 / plugin-api 1.85.0 (omadia#2157): a reply to a reminder the bot
+    // sent DMs the kernel the same id the send reported as `messageId`.
+    ...(isPrivate && args.replyToMessageId !== undefined ? { replyToMessageId: String(args.replyToMessageId) } : {}),
     ...(userRef ? { speaker: { kind: userRef.kind, id: userRef.id, ...(userRef.displayName ? { displayName: userRef.displayName } : {}) } } : {}),
   };
 }
@@ -330,6 +358,28 @@ export class TelegramApiClient {
     parse_mode?: 'MarkdownV2' | 'HTML';
   }): Promise<TelegramMessage> {
     return await this.call<TelegramMessage>('sendDocument', params);
+  }
+
+  /**
+   * Send a native poll. https://core.telegram.org/bots/api#sendpoll
+   * `options` are InputPollOption objects (Bot API 7.3+).
+   */
+  async sendPoll(params: {
+    chat_id: number;
+    question: string;
+    options: ReadonlyArray<{ text: string }>;
+    is_anonymous?: boolean;
+    allows_multiple_answers?: boolean;
+  }): Promise<TelegramMessage> {
+    return await this.call<TelegramMessage>('sendPoll', params);
+  }
+
+  /**
+   * Close a poll this bot sent; no answers are accepted after it.
+   * https://core.telegram.org/bots/api#stoppoll
+   */
+  async stopPoll(params: { chat_id: number; message_id: number }): Promise<unknown> {
+    return await this.call<unknown>('stopPoll', params);
   }
 
   async sendChatAction(params: {
@@ -413,7 +463,7 @@ export class TelegramApiClient {
   async getChatMember(params: {
     chat_id: number;
     user_id: number;
-  }): Promise<{ user: TelegramUser; status: string; is_member?: boolean }> {
+  }): Promise<{ user: TelegramUser; status: string; is_member?: boolean; can_send_messages?: boolean }> {
     return await this.call('getChatMember', params);
   }
 
@@ -502,6 +552,10 @@ export interface TelegramBotOptions {
   speakerHistory?: SpeakerHistoryReader;
   /** Inbound events for native facilitators and card answers; feature-detected in plugin.ts. */
   conversationMessages?: TelegramConversationMessages;
+  /** Joins and leaves for the kernel (shared by every bot; deduplicates). Absent = not emitted. */
+  membershipEvents?: TelegramMembershipEvents;
+  /** The native polls this bot posted, to map a `poll_answer` back to the kernel's ids. */
+  polls?: Pick<TelegramPollStore, 'find'>;
   /** Pace profile; default: SDK acknowledgement threshold, typing renewed every 4 s. */
   paceProfile?: ChannelPaceProfile;
   /** Timer seam for tests. */
@@ -548,6 +602,12 @@ export const TELEGRAM_PACE_PROFILE: ChannelPaceProfile = Object.freeze({
   ...DEFAULT_PACE_PROFILE,
   typingIntervalMs: 4_000,
 });
+
+/** The notice for a message without text or a usable image. */
+const UNSUPPORTED_MESSAGE_TEXT = 'Ich kann derzeit nur Text-Nachrichten und Bilder verarbeiten.';
+
+/** At most this many groups are remembered as "the bot read an unaddressed message here". */
+const MAX_UNADDRESSED_CHATS = 1_000;
 
 /** The notice for a turn nobody answers when the kernel gave no notice of its own. */
 const NO_AGENT_TEXT = 'Für diese Unterhaltung ist kein Agent eingerichtet.';
@@ -598,6 +658,12 @@ export class TelegramBot {
   private readonly botIdentity: { id: number; username: string };
   private readonly channelResolver?: ChannelRouteLookup;
   private readonly conversationMessages?: TelegramConversationMessages;
+  private readonly membershipEvents: TelegramMembershipEvents | undefined;
+  private readonly polls: Pick<TelegramPollStore, 'find'> | undefined;
+  /** One person's answers in one poll, handled in the order Telegram sent them. */
+  private readonly pollAnswerQueue = new KeyedQueue();
+  /** Groups where this bot got a message that did not address it (privacy demonstrably off). */
+  private readonly unaddressedSeen = new Set<number>();
   private readonly agentBot: boolean;
   private readonly routineTurn: TelegramRoutineTurn | undefined;
   constructor(opts: TelegramBotOptions) {
@@ -625,6 +691,8 @@ export class TelegramBot {
     this.botIdentity = opts.botIdentity;
     if (opts.channelResolver) this.channelResolver = opts.channelResolver;
     if (opts.conversationMessages) this.conversationMessages = opts.conversationMessages;
+    this.membershipEvents = opts.membershipEvents;
+    this.polls = opts.polls;
   }
 
   /**
@@ -657,6 +725,10 @@ export class TelegramBot {
       await this.trackMemberUpdate(update.chat_member);
       return;
     }
+    if (update.poll_answer) {
+      await this.handlePollAnswer(update.poll_answer);
+      return;
+    }
     // Other update kinds (edited_message, channel_post, …) are silently
     // ignored — out of scope for v1.
   }
@@ -680,6 +752,9 @@ export class TelegramBot {
     const isGroup =
       upd.chat.type === 'group' || upd.chat.type === 'supergroup';
     if (!isGroup) return; // Private/channel transitions don't matter
+    // Removed, re-added or promoted/demoted: privacy mode may differ now, so
+    // the "read an unaddressed message" proof has to come again.
+    this.unaddressedSeen.delete(upd.chat.id);
 
     const wasAbsent =
       upd.old_chat_member.status === 'left' ||
@@ -721,6 +796,8 @@ export class TelegramBot {
     console.log(
       `[telegram] group activated chat=${String(upd.chat.id)} (${activation.chatTitle}) by harness=${adderBinding.harnessIdentityId} (${adderBinding.harnessIdentityLabel}) via my_chat_member auto-allowlist`,
     );
+    // The announced entry: who added the bot, for a facilitator waiting for it.
+    this.membershipEvents?.botAdded(upd.chat, upd.new_chat_member.user, upd.from, upd.date);
 
     // DM-Confirm to the operator. Best-effort — if the operator has
     // blocked the bot's DMs, the send fails silently and only the log
@@ -751,38 +828,68 @@ export class TelegramBot {
     const isNotice =
       (message.new_chat_members?.length ?? 0) > 0 || message.left_chat_member !== undefined;
     const isGroup = message.chat.type === 'group' || message.chat.type === 'supergroup';
-    if (!isGroup || !this.memberTracker) return isNotice;
+    if (!isGroup || (!this.memberTracker && !this.membershipEvents)) return isNotice;
     if (!(await this.pairingStore.getGroupActivation(message.chat.id))) return isNotice;
 
     const chatId = message.chat.id;
-    const joined = [...(message.from ? [message.from] : []), ...(message.new_chat_members ?? [])]
-      .filter((u) => u.id !== message.left_chat_member?.id);
-    const someoneNew = await this.memberTracker.observe(chatId, joined);
-    if (message.left_chat_member) {
-      await this.memberTracker.forget(chatId, [message.left_chat_member.id]);
+    if (this.memberTracker) {
+      const joined = [...(message.from ? [message.from] : []), ...(message.new_chat_members ?? [])]
+        .filter((u) => u.id !== message.left_chat_member?.id);
+      const someoneNew = await this.memberTracker.observe(chatId, joined);
+      if (message.left_chat_member) {
+        await this.memberTracker.forget(chatId, [message.left_chat_member.id]);
+      }
+      // A cached roster that predates this change could be stale either way.
+      if (isNotice || someoneNew) this.invalidateRoster?.(chatId);
     }
-    // A cached roster that predates this change could be stale either way.
-    if (isNotice || someoneNew) this.invalidateRoster?.(chatId);
+    // The bot's own arrival is `bot_added` (my_chat_member), not a member joining.
+    const newcomers = (message.new_chat_members ?? []).filter((u) => u.id !== this.botIdentity.id);
+    if (newcomers.length > 0) this.membershipEvents?.joined(message.chat, newcomers, message.date);
+    if (message.left_chat_member) this.membershipEvents?.left(message.chat, [message.left_chat_member], message.date);
     return isNotice;
   }
 
   /** Someone else's membership changed (`chat_member`; the bot must be admin). */
   private async trackMemberUpdate(upd: ChatMemberUpdated): Promise<void> {
     const isGroup = upd.chat.type === 'group' || upd.chat.type === 'supergroup';
-    if (!isGroup || !this.memberTracker) return;
+    if (!isGroup || (!this.memberTracker && !this.membershipEvents)) return;
     if (!(await this.pairingStore.getGroupActivation(upd.chat.id))) return;
     const member = upd.new_chat_member;
-    const present =
-      member.status === 'creator' ||
-      member.status === 'administrator' ||
-      member.status === 'member' ||
-      (member.status === 'restricted' && member.is_member === true);
-    if (present) {
-      await this.memberTracker.observe(upd.chat.id, [member.user]);
-    } else {
-      await this.memberTracker.forget(upd.chat.id, [member.user.id]);
+    const present = isPresentMember(member);
+    if (this.memberTracker) {
+      if (present) {
+        await this.memberTracker.observe(upd.chat.id, [member.user]);
+      } else {
+        await this.memberTracker.forget(upd.chat.id, [member.user.id]);
+      }
+      this.invalidateRoster?.(upd.chat.id);
     }
-    this.invalidateRoster?.(upd.chat.id);
+    // Only a change of presence is a join or a leave (not a promotion).
+    const wasPresent = isPresentMember(upd.old_chat_member);
+    if (present && !wasPresent) this.membershipEvents?.joined(upd.chat, [member.user], upd.date);
+    if (!present && wasPresent) this.membershipEvents?.left(upd.chat, [member.user], upd.date);
+  }
+
+  /**
+   * A vote in a native poll (`poll_answer`). Only a poll this bot posted for
+   * the kernel is known; anything else (a poll a person started) is ignored.
+   */
+  private handlePollAnswer(answer: TelegramPollAnswer): Promise<void> {
+    // A webhook delivers updates concurrently: without the queue a person's
+    // second tap could overtake the first and the older ballot would win.
+    const voter = answer.user ? `u${String(answer.user.id)}` : `c${String(answer.voter_chat?.id ?? '')}`;
+    return this.pollAnswerQueue.run(`${answer.poll_id}:${voter}`, () => this.reportPollAnswer(answer));
+  }
+
+  private async reportPollAnswer(answer: TelegramPollAnswer): Promise<void> {
+    const messages = this.conversationMessages;
+    if (!messages || !this.polls) return;
+    const poll = await this.polls.find(answer.poll_id);
+    if (!poll) return;
+    const isReported = messages.emitPollAnswer(answer, poll);
+    console.log(
+      `[telegram] poll answer chat=${String(poll.chatId)} poll=${poll.pollId} reported=${String(isReported)}`,
+    );
   }
 
   private async handleMessage(message: TelegramMessage): Promise<void> {
@@ -792,16 +899,21 @@ export class TelegramBot {
 
     // S+7.7+ — image-message support. Photos and image-MIME documents
     // become inbound attachments + an implicit caption-or-default text.
-    // Pure-text messages still take the original text path.
-    const inboundImages = await this.collectInboundImages(message);
+    // Pure-text messages still take the original text path. The download
+    // waits until every gate passed: a group message that is not for the bot
+    // (privacy off, facilitation) is never fetched.
+    const hasImage = hasInboundImage(message);
 
     const rawText = message.text?.trim() ?? message.caption?.trim() ?? '';
-    if (!rawText && inboundImages.length === 0) {
+    if (!rawText && !hasImage) {
       // Truly empty: stickers, voice, video without caption — out of scope.
-      await this.emitter.sendSystem(
-        message.chat.id,
-        'Ich kann derzeit nur Text-Nachrichten und Bilder verarbeiten.',
-      );
+      // In a group only when the bot is addressed in an activated group: with
+      // privacy mode off (facilitation) every sticker would draw this notice.
+      if (message.chat.type === 'group' || message.chat.type === 'supergroup') {
+        const isAddressed = this.isBotAddressedInGroup(message);
+        if (!isAddressed || !(await this.pairingStore.getGroupActivation(message.chat.id))) return;
+      }
+      await this.emitter.sendSystem(message.chat.id, UNSUPPORTED_MESSAGE_TEXT);
       return;
     }
     // For images without caption, give the orchestrator a generic
@@ -874,6 +986,7 @@ export class TelegramBot {
       // with privacy-on this filter is a safe defense against legacy-
       // group server-side delivery quirks.
       const isAddressed = this.isBotAddressedInGroup(message);
+      this.noteUnaddressed(message, isAddressed);
       // The record for a facilitation the kernel subscribed to comes before the
       // mention gate: it concerns messages that need not mention the bot.
       if (await this.handleInboundForEngine(message, isAddressed)) return;
@@ -903,13 +1016,43 @@ export class TelegramBot {
       userMessage,
     );
 
+    const inboundImages = hasImage ? await this.collectInboundImages(message) : [];
+    if (!rawText && inboundImages.length === 0) {
+      // Every image failed to download: nothing to answer.
+      await this.emitter.sendSystem(message.chat.id, UNSUPPORTED_MESSAGE_TEXT);
+      return;
+    }
+
     await this.runTurn({
       chat: message.chat,
       from: message.from,
       messageId: message.message_id,
+      ...(message.reply_to_message ? { replyToMessageId: message.reply_to_message.message_id } : {}),
       userMessage,
       attachments: inboundImages,
     });
+  }
+
+  /**
+   * Has this bot received a message in `chatId` that did not address it? Only
+   * a bot that reads every group message gets one, so it proves privacy mode
+   * is off for this group (readiness `verified`). Process-local: after a
+   * restart the proof has to come again.
+   */
+  hasReadUnaddressedMessage(chatId: number): boolean {
+    return this.unaddressedSeen.has(chatId);
+  }
+
+  /** A human group message that neither addresses the bot nor is a command. */
+  private noteUnaddressed(message: TelegramMessage, isAddressed: boolean): void {
+    if (isAddressed || !message.from || message.from.is_bot) return;
+    // A bare /command reaches a bot with privacy mode on too: no proof.
+    if ((message.text ?? message.caption ?? '').trim().startsWith('/')) return;
+    if (this.unaddressedSeen.size >= MAX_UNADDRESSED_CHATS && !this.unaddressedSeen.has(message.chat.id)) {
+      const oldest = this.unaddressedSeen.values().next().value;
+      if (oldest !== undefined) this.unaddressedSeen.delete(oldest);
+    }
+    this.unaddressedSeen.add(message.chat.id);
   }
 
   /**
@@ -1252,6 +1395,8 @@ export class TelegramBot {
     chat: TelegramChat;
     from?: TelegramUser;
     messageId?: number;
+    /** The `message_id` the person replied to (private turns state it in the origin). */
+    replyToMessageId?: number;
     userMessage: string;
     attachments?: Array<{
       kind: 'image' | 'file' | 'audio' | 'video';
@@ -1296,6 +1441,7 @@ export class TelegramBot {
       conversationScope,
       chatId: input.chat.id,
       ...(input.messageId !== undefined ? { messageId: input.messageId } : {}),
+      ...(input.replyToMessageId !== undefined ? { replyToMessageId: input.replyToMessageId } : {}),
       ...(input.from ? { fromId: input.from.id, fromDisplayName: telegramDisplayName(input.from) } : {}),
     });
 
@@ -1527,3 +1673,17 @@ function telegramDisplayName(user: {
   return user.username ? `@${user.username}` : 'Telegram User';
 }
 
+/** A photo, or a document with an image MIME type: what `collectInboundImages` may fetch. */
+function hasInboundImage(message: TelegramMessage): boolean {
+  return (message.photo?.length ?? 0) > 0 || message.document?.mime_type?.startsWith('image/') === true;
+}
+
+/** In the chat: creator, administrator, member, or restricted but still a member. */
+function isPresentMember(member: ChatMember): boolean {
+  return (
+    member.status === 'creator' ||
+    member.status === 'administrator' ||
+    member.status === 'member' ||
+    (member.status === 'restricted' && member.is_member === true)
+  );
+}

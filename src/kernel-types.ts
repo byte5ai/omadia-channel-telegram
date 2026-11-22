@@ -145,6 +145,12 @@ export interface TurnOriginShim {
   readonly channelConversationId?: string;
   /** The Bot API `message_id` this turn answers. */
   readonly messageId?: string;
+  /**
+   * The `message_id` the person replied to, on private turns: the same id
+   * format the sends report as `messageId`, so a reply to a reminder matches
+   * the send. Since channel-sdk 0.3.11 / plugin-api 1.85.0 (omadia#2157); older kernels ignore it.
+   */
+  readonly replyToMessageId?: string;
   /** Who spoke, in the channel's terms. */
   readonly speaker?: { readonly kind: string; readonly id: string; readonly displayName?: string };
 }

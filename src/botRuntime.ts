@@ -25,6 +25,7 @@ import { TelegramConversationRosterProvider } from './conversationRoster.js';
 import type { DmPolicy } from './dmPolicyGuard.js';
 import type { GroupMemberTracker } from './groupMemberTracker.js';
 import type { ChatAgent, TurnContextModule } from './kernel-types.js';
+import type { TelegramMembershipEvents } from './membershipEvents.js';
 import { PairingStore } from './pairingStore.js';
 import type { PairingTokenRegistry } from './pairingTokens.js';
 import type { PersistentSpeakerHistoryStore } from './speakerHistory.js';
@@ -37,6 +38,7 @@ import {
   type TelegramUser,
 } from './telegramBot.js';
 import { TelegramEmitter } from './telegramEmitter.js';
+import { TelegramPollStore } from './telegramPolls.js';
 import { createTelegramRoutineTurn } from './telegramRoutines.js';
 import { TelegramRosterProvider } from './telegramRoster.js';
 import type { TelegramSendDeps } from './telegramSend.js';
@@ -61,6 +63,8 @@ export interface SharedBotDeps {
   readonly pairingTokens: PairingTokenRegistry;
   readonly speakerHistory: PersistentSpeakerHistoryStore;
   readonly memberTracker: GroupMemberTracker;
+  /** Joins and leaves for the kernel; one instance, so a change seen by several bots goes out once. */
+  readonly membershipEvents?: TelegramMembershipEvents | undefined;
   /** The installation's webhook secret; agent bots derive theirs from it. */
   readonly webhookSecret: string;
   /** `undefined` = long-polling. */
@@ -79,7 +83,11 @@ export interface TelegramBotRuntime {
   readonly bot: TelegramBot;
   readonly sendDeps: TelegramSendDeps;
   readonly roster: TelegramConversationRosterProvider;
+  /** This bot's group activations (the installation's own, or the agent bot's). */
+  readonly pairingStore: PairingStore;
   readonly webhookSecret: string;
+  /** Has this bot read a group message there that did not address it (readiness `verified`)? */
+  hasReadUnaddressedMessage(chatId: number): boolean;
   /** `webhook` or `long-poll`, once started. */
   mode(): 'webhook' | 'long-poll' | 'stopped';
   /** Register the webhook, or start long-polling. */
@@ -109,11 +117,17 @@ export function createBotRuntime(
   const pairingStore = agentBot ? new PairingStore(shared.memoryStore, { agentBotId: me.id }) : shared.pairingStore;
   const rosterProvider = new TelegramRosterProvider(api, shared.memberTracker, me.id);
   const conversationMessages = conversationMessagesFor(shared, me.id);
+  // Per bot: Telegram's poll ids are the sending bot's, and only it gets the votes.
+  const polls = new TelegramPollStore(shared.memoryStore, me.id, Date.now, async (poll) => {
+    await api.stopPoll({ chat_id: poll.chatId, message_id: poll.messageId });
+  });
   const bot = new TelegramBot({
     api,
     chatAgent: shared.chatAgent,
     channelResolver: shared.channelRoute,
     ...(conversationMessages ? { conversationMessages } : {}),
+    ...(shared.membershipEvents ? { membershipEvents: shared.membershipEvents } : {}),
+    polls,
     history: new InMemoryConversationHistoryStore(),
     turnContext: shared.turnContext,
     rosterProvider: (chatId) => rosterProvider.forChat(chatId),
@@ -133,6 +147,7 @@ export function createBotRuntime(
   const sendDeps: TelegramSendDeps = {
     emitter: new TelegramEmitter({ api, speakerHistory: shared.speakerHistory, nativeIdentity: agentBot }),
     api,
+    polls,
     pairingStore,
     dmPolicy: shared.dmPolicy,
     botKey,
@@ -156,7 +171,9 @@ export function createBotRuntime(
     bot,
     sendDeps,
     roster,
+    pairingStore,
     webhookSecret,
+    hasReadUnaddressedMessage: (chatId) => bot.hasReadUnaddressedMessage(chatId),
     mode: () => mode,
     async start() {
       if (shared.publicBaseUrl) {

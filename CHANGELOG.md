@@ -1,5 +1,63 @@
 # Changelog
 
+## Unreleased
+
+Native facilitators in Telegram (byte5ai/omadia-channel-telegram#8, epic
+byte5ai/omadia#2043, spec §5.3, §5.5, §6.4). Uses only contracts already in
+`@omadia/channel-sdk` 0.3.9 / `@omadia/plugin-api` 1.82.0
+(`registerReadinessProvider`, `registerMeetingSourceProvider`,
+`emitConversationEvent`, `SendPoll`); every one is feature-detected.
+Two later kernel fields are read structurally when present:
+`SendPoll.multipleAnswers` (plugin-api 1.84.0, omadia#2155) and the private
+turn's `TurnOrigin.replyToMessageId` (channel-sdk 0.3.11, omadia#2157).
+Suggested version: 0.7.0.
+
+- **Readiness** per bot and group: activated, member, may post, receives every
+  message (administrator, or privacy mode off: then `verified: false`).
+  Without it the kernel refused every facilitation on Telegram.
+- **Capability snapshot** of an activated group: text and native polls in,
+  text and poll answers out, so the facilitator posts polls here.
+- **Native polls**: the conversation send declares `poll`; text first, then a
+  non-anonymous single-choice `sendPoll`. `poll_answer` is now in
+  `allowed_updates`; a vote reaches the kernel as `card_answer` with the
+  kernel's poll and option ids (persisted, so a vote after a restart still
+  maps). Retracted votes and anonymous administrators are not reported.
+- **Approval votes as multiple-answer polls**: a poll with
+  `multipleAnswers: true` (read structurally; plugin-api 1.84.0 /
+  channel-sdk 0.3.10, omadia#2155) is sent with `allows_multiple_answers`
+  and its answers carry `{ optionIds }`. On an older kernel polls stay single
+  choice (README gap table).
+- **Runoff rounds stop the earlier poll**: a new poll of the same step
+  (`<stepId>:<round>`) stops the open one with `stopPoll` first
+  (best-effort, never fails the send) and drops its record; a poll that
+  could not be stopped keeps its record, so the next round tries again. Closing a poll
+  when a step ends is a documented gap: the kernel sends nothing for it.
+- **A refused poll** is followed by the options as text, so the ballot hint
+  never points at a poll nobody sees; reported without `cardMessageId`.
+- **Poll answers in order**: one person's answers in one poll are handled one
+  after another (a webhook delivers them concurrently).
+- **Bounded poll records**: deleted when stopped or replaced, dropped after
+  30 days or beyond 20 open polls per chat (such a poll is stopped on
+  Telegram too); the in-memory cache holds 500.
+- **`replyToMessageId` on private turns** (`TurnOrigin`, channel-sdk 0.3.11 /
+  plugin-api 1.85.0, omadia#2157): a reply to a reminder the bot sent names
+  the same id the send reported as `messageId`.
+- **Readiness**: a failing activation lookup is `graph_error` (and no
+  capability snapshot) instead of a rejected check; privacy off is
+  `verified` once the bot has read a message there that did not address it
+  (reset when the bot's membership in the group changes).
+- **Membership events**: `members_added`, `members_removed` and `bot_added`
+  (with who added the bot) for activated groups; bots left out, duplicates
+  (notice plus `chat_member`, or several bots) dropped within 60 s. A change
+  whose emit failed is not remembered, so the next copy goes out.
+- **Images behind the gates**: a photo is downloaded only once the message
+  passed the activation, mention and engine gates.
+- **Fix**: a sticker or voice message in a group no longer draws the
+  "only text and images" notice unless it addresses the bot in an activated
+  group (with privacy mode off every sticker did).
+- README: what Telegram cannot do for a facilitation and the closest
+  behaviour.
+
 ## 0.6.0
 
 Bot reactions (spec 2043 §5.14, byte5ai/omadia#2061; decision record ADR 0027,

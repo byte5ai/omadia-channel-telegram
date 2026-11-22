@@ -11,6 +11,7 @@
 export { activate } from './plugin.js';
 
 export {
+  TELEGRAM_ALLOWED_UPDATES,
   TELEGRAM_CHANNEL_TYPE,
   TelegramApiClient,
   TelegramBot,
@@ -23,6 +24,7 @@ export {
   type TelegramUser,
   type TelegramChat,
   type TelegramCallbackQuery,
+  type TelegramPollAnswer,
 } from './telegramBot.js';
 
 export {
@@ -90,6 +92,18 @@ export {
   type RosterSnapshot,
 } from './telegramRoster.js';
 export { GroupMemberTracker, type TrackedMember } from './groupMemberTracker.js';
+export {
+  MEMBERSHIP_DEDUPE_MS,
+  TelegramMembershipEvents,
+  type MembershipEventSink,
+} from './membershipEvents.js';
+export { TelegramPollStore, chosenOptionIds, type PostedPoll } from './telegramPolls.js';
+export {
+  createTelegramMeetingSource,
+  createTelegramReadinessProvider,
+  type TelegramReadinessBot,
+  type TelegramReadinessLookup,
+} from './telegramReadiness.js';
 
 export {
   evaluateDmPolicy,
