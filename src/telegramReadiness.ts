@@ -15,7 +15,8 @@
  *    `can_read_all_group_messages`), and it applies to a group only from the
  *    moment the bot is (re-)added after the change. The Bot API cannot tell
  *    whether that happened, so a non-admin bot with privacy off is reported
- *    ready with `verified: false`;
+ *    ready with `verified: false` until it has read a message in the group
+ *    that did not address it (which proves it gets every message);
  *  - the bot speaks only in groups a paired person activated it in.
  *
  * Meeting source: a Telegram group is a chat, never a meeting. It takes text
@@ -37,6 +38,12 @@ export interface TelegramReadinessBot {
   readonly username: string;
   readonly api: Pick<TelegramApiClient, 'getMe' | 'getChatMember'>;
   readonly pairingStore: Pick<PairingStore, 'getGroupActivation'>;
+  /**
+   * Has this bot read a message in the group that did not address it? Only
+   * a bot that gets every message does, so privacy off is then proven
+   * (`verified` is not set to false). Absent = no such proof is kept.
+   */
+  hasReadUnaddressedMessage?(chatId: number): boolean;
 }
 
 /** The bot with exactly this key (`tg:<botId>`); no key = the installation's own bot. */
@@ -65,7 +72,13 @@ async function checkReadiness(
     return notReady('unsupported_conversation', 'a private chat with the bot cannot be moderated; a facilitation runs in a group');
   }
   const name = bot.username ? `@${bot.username}` : `bot ${String(bot.botId)}`;
-  if (!(await bot.pairingStore.getGroupActivation(chatId))) {
+  let isActivated: boolean;
+  try {
+    isActivated = Boolean(await bot.pairingStore.getGroupActivation(chatId));
+  } catch (err) {
+    return notReady('graph_error', `whether ${name} is activated in this group could not be read: ${errorMessage(err)}`);
+  }
+  if (!isActivated) {
     return notReady(
       'app_not_installed',
       `${name} is not activated in this group: a person paired with omadia has to add ${name} to the group`,
@@ -118,8 +131,9 @@ async function checkReadiness(
     canPost,
     missing,
     // Privacy off without admin rights: whether the bot was re-added after the
-    // change cannot be read, so this is the absence of a known obstacle.
-    ...(!isAdmin && privacyOff ? { verified: false } : {}),
+    // change cannot be read, so this is the absence of a known obstacle,
+    // unless the bot already read a message here that did not address it.
+    ...(!isAdmin && privacyOff && bot.hasReadUnaddressedMessage?.(chatId) !== true ? { verified: false } : {}),
   };
 }
 
@@ -134,7 +148,13 @@ export function createTelegramMeetingSource(
       const bot = lookup(opts.asChannelKey?.trim().toLowerCase());
       const chatId = parseChatId(conversationId);
       if (!bot || chatId === undefined || chatId > 0) return undefined;
-      if (!(await bot.pairingStore.getGroupActivation(chatId))) return undefined;
+      try {
+        if (!(await bot.pairingStore.getGroupActivation(chatId))) return undefined;
+      } catch (err) {
+        // No snapshot: the kernel keeps its text-only baseline until the next one.
+        console.warn(`[telegram] activation of chat ${String(chatId)} unreadable, no capability snapshot: ${errorMessage(err)}`);
+        return undefined;
+      }
       return {
         channelType: TELEGRAM_CHANNEL_TYPE,
         conversationId,

@@ -57,6 +57,7 @@ import { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
 import { telegramBotKey, type TelegramConversationMessages } from './conversationMessages.js';
 import type { TelegramMembershipEvents } from './membershipEvents.js';
 import type { TelegramPollStore } from './telegramPolls.js';
+import { KeyedQueue } from './keyedQueue.js';
 
 // ---------------------------------------------------------------------------
 // Bot API envelope — narrow shapes for the fields we read
@@ -280,6 +281,8 @@ export function telegramTurnOrigin(args: {
   readonly chatId?: number;
   /** The Bot API `message_id` this turn answers. */
   readonly messageId?: number;
+  /** The `message_id` the person replied to; stated on private turns only. */
+  readonly replyToMessageId?: number;
 }): TurnOriginShim {
   const isPrivate = args.chatType === 'private';
   const scope: ScopeId =
@@ -304,6 +307,9 @@ export function telegramTurnOrigin(args: {
     ...(conversationType ? { conversationType } : {}),
     ...(args.chatId !== undefined ? { channelConversationId: String(args.chatId) } : {}),
     ...(args.messageId !== undefined ? { messageId: String(args.messageId) } : {}),
+    // since channel-sdk 0.3.11 / plugin-api 1.85.0 (omadia#2157): a reply to a reminder the bot
+    // sent DMs the kernel the same id the send reported as `messageId`.
+    ...(isPrivate && args.replyToMessageId !== undefined ? { replyToMessageId: String(args.replyToMessageId) } : {}),
     ...(userRef ? { speaker: { kind: userRef.kind, id: userRef.id, ...(userRef.displayName ? { displayName: userRef.displayName } : {}) } } : {}),
   };
 }
@@ -366,6 +372,14 @@ export class TelegramApiClient {
     allows_multiple_answers?: boolean;
   }): Promise<TelegramMessage> {
     return await this.call<TelegramMessage>('sendPoll', params);
+  }
+
+  /**
+   * Close a poll this bot sent; no answers are accepted after it.
+   * https://core.telegram.org/bots/api#stoppoll
+   */
+  async stopPoll(params: { chat_id: number; message_id: number }): Promise<unknown> {
+    return await this.call<unknown>('stopPoll', params);
   }
 
   async sendChatAction(params: {
@@ -589,6 +603,12 @@ export const TELEGRAM_PACE_PROFILE: ChannelPaceProfile = Object.freeze({
   typingIntervalMs: 4_000,
 });
 
+/** The notice for a message without text or a usable image. */
+const UNSUPPORTED_MESSAGE_TEXT = 'Ich kann derzeit nur Text-Nachrichten und Bilder verarbeiten.';
+
+/** At most this many groups are remembered as "the bot read an unaddressed message here". */
+const MAX_UNADDRESSED_CHATS = 1_000;
+
 /** The notice for a turn nobody answers when the kernel gave no notice of its own. */
 const NO_AGENT_TEXT = 'Für diese Unterhaltung ist kein Agent eingerichtet.';
 
@@ -640,6 +660,10 @@ export class TelegramBot {
   private readonly conversationMessages?: TelegramConversationMessages;
   private readonly membershipEvents: TelegramMembershipEvents | undefined;
   private readonly polls: Pick<TelegramPollStore, 'find'> | undefined;
+  /** One person's answers in one poll, handled in the order Telegram sent them. */
+  private readonly pollAnswerQueue = new KeyedQueue();
+  /** Groups where this bot got a message that did not address it (privacy demonstrably off). */
+  private readonly unaddressedSeen = new Set<number>();
   private readonly agentBot: boolean;
   private readonly routineTurn: TelegramRoutineTurn | undefined;
   constructor(opts: TelegramBotOptions) {
@@ -847,7 +871,14 @@ export class TelegramBot {
    * A vote in a native poll (`poll_answer`). Only a poll this bot posted for
    * the kernel is known; anything else (a poll a person started) is ignored.
    */
-  private async handlePollAnswer(answer: TelegramPollAnswer): Promise<void> {
+  private handlePollAnswer(answer: TelegramPollAnswer): Promise<void> {
+    // A webhook delivers updates concurrently: without the queue a person's
+    // second tap could overtake the first and the older ballot would win.
+    const voter = answer.user ? `u${String(answer.user.id)}` : `c${String(answer.voter_chat?.id ?? '')}`;
+    return this.pollAnswerQueue.run(`${answer.poll_id}:${voter}`, () => this.reportPollAnswer(answer));
+  }
+
+  private async reportPollAnswer(answer: TelegramPollAnswer): Promise<void> {
     const messages = this.conversationMessages;
     if (!messages || !this.polls) return;
     const poll = await this.polls.find(answer.poll_id);
@@ -865,11 +896,13 @@ export class TelegramBot {
 
     // S+7.7+ — image-message support. Photos and image-MIME documents
     // become inbound attachments + an implicit caption-or-default text.
-    // Pure-text messages still take the original text path.
-    const inboundImages = await this.collectInboundImages(message);
+    // Pure-text messages still take the original text path. The download
+    // waits until every gate passed: a group message that is not for the bot
+    // (privacy off, facilitation) is never fetched.
+    const hasImage = hasInboundImage(message);
 
     const rawText = message.text?.trim() ?? message.caption?.trim() ?? '';
-    if (!rawText && inboundImages.length === 0) {
+    if (!rawText && !hasImage) {
       // Truly empty: stickers, voice, video without caption — out of scope.
       // In a group only when the bot is addressed in an activated group: with
       // privacy mode off (facilitation) every sticker would draw this notice.
@@ -877,10 +910,7 @@ export class TelegramBot {
         const isAddressed = this.isBotAddressedInGroup(message);
         if (!isAddressed || !(await this.pairingStore.getGroupActivation(message.chat.id))) return;
       }
-      await this.emitter.sendSystem(
-        message.chat.id,
-        'Ich kann derzeit nur Text-Nachrichten und Bilder verarbeiten.',
-      );
+      await this.emitter.sendSystem(message.chat.id, UNSUPPORTED_MESSAGE_TEXT);
       return;
     }
     // For images without caption, give the orchestrator a generic
@@ -953,6 +983,7 @@ export class TelegramBot {
       // with privacy-on this filter is a safe defense against legacy-
       // group server-side delivery quirks.
       const isAddressed = this.isBotAddressedInGroup(message);
+      this.noteUnaddressed(message, isAddressed);
       // The record for a facilitation the kernel subscribed to comes before the
       // mention gate: it concerns messages that need not mention the bot.
       if (await this.handleInboundForEngine(message, isAddressed)) return;
@@ -982,13 +1013,43 @@ export class TelegramBot {
       userMessage,
     );
 
+    const inboundImages = hasImage ? await this.collectInboundImages(message) : [];
+    if (!rawText && inboundImages.length === 0) {
+      // Every image failed to download: nothing to answer.
+      await this.emitter.sendSystem(message.chat.id, UNSUPPORTED_MESSAGE_TEXT);
+      return;
+    }
+
     await this.runTurn({
       chat: message.chat,
       from: message.from,
       messageId: message.message_id,
+      ...(message.reply_to_message ? { replyToMessageId: message.reply_to_message.message_id } : {}),
       userMessage,
       attachments: inboundImages,
     });
+  }
+
+  /**
+   * Has this bot received a message in `chatId` that did not address it? Only
+   * a bot that reads every group message gets one, so it proves privacy mode
+   * is off for this group (readiness `verified`). Process-local: after a
+   * restart the proof has to come again.
+   */
+  hasReadUnaddressedMessage(chatId: number): boolean {
+    return this.unaddressedSeen.has(chatId);
+  }
+
+  /** A human group message that neither addresses the bot nor is a command. */
+  private noteUnaddressed(message: TelegramMessage, isAddressed: boolean): void {
+    if (isAddressed || !message.from || message.from.is_bot) return;
+    // A bare /command reaches a bot with privacy mode on too: no proof.
+    if ((message.text ?? message.caption ?? '').trim().startsWith('/')) return;
+    if (this.unaddressedSeen.size >= MAX_UNADDRESSED_CHATS && !this.unaddressedSeen.has(message.chat.id)) {
+      const oldest = this.unaddressedSeen.values().next().value;
+      if (oldest !== undefined) this.unaddressedSeen.delete(oldest);
+    }
+    this.unaddressedSeen.add(message.chat.id);
   }
 
   /**
@@ -1331,6 +1392,8 @@ export class TelegramBot {
     chat: TelegramChat;
     from?: TelegramUser;
     messageId?: number;
+    /** The `message_id` the person replied to (private turns state it in the origin). */
+    replyToMessageId?: number;
     userMessage: string;
     attachments?: Array<{
       kind: 'image' | 'file' | 'audio' | 'video';
@@ -1375,6 +1438,7 @@ export class TelegramBot {
       conversationScope,
       chatId: input.chat.id,
       ...(input.messageId !== undefined ? { messageId: input.messageId } : {}),
+      ...(input.replyToMessageId !== undefined ? { replyToMessageId: input.replyToMessageId } : {}),
       ...(input.from ? { fromId: input.from.id, fromDisplayName: telegramDisplayName(input.from) } : {}),
     });
 
@@ -1604,6 +1668,11 @@ function telegramDisplayName(user: {
     .trim();
   if (composed.length > 0) return composed;
   return user.username ? `@${user.username}` : 'Telegram User';
+}
+
+/** A photo, or a document with an image MIME type: what `collectInboundImages` may fetch. */
+function hasInboundImage(message: TelegramMessage): boolean {
+  return (message.photo?.length ?? 0) > 0 || message.document?.mime_type?.startsWith('image/') === true;
 }
 
 /** In the chat: creator, administrator, member, or restricted but still a member. */

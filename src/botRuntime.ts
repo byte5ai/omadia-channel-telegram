@@ -86,6 +86,8 @@ export interface TelegramBotRuntime {
   /** This bot's group activations (the installation's own, or the agent bot's). */
   readonly pairingStore: PairingStore;
   readonly webhookSecret: string;
+  /** Has this bot read a group message there that did not address it (readiness `verified`)? */
+  hasReadUnaddressedMessage(chatId: number): boolean;
   /** `webhook` or `long-poll`, once started. */
   mode(): 'webhook' | 'long-poll' | 'stopped';
   /** Register the webhook, or start long-polling. */
@@ -169,6 +171,7 @@ export function createBotRuntime(
     roster,
     pairingStore,
     webhookSecret,
+    hasReadUnaddressedMessage: (chatId) => bot.hasReadUnaddressedMessage(chatId),
     mode: () => mode,
     async start() {
       if (shared.publicBaseUrl) {

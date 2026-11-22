@@ -20,7 +20,9 @@
  *
  * A vote in a native poll the bot posted for the kernel (`poll_answer`) is a
  * `card_answer` event: `cardAnswer: { cardId: <kernel pollId>, value:
- * { optionId } }`, `messageId` = the poll's `message_id` (telegramPolls.ts).
+ * { optionId } }` (a multiple-answer poll: `{ optionIds }`), `messageId` = the
+ * poll's `message_id` (telegramPolls.ts). The bot reports one person's
+ * answers in one poll in the order Telegram sent them.
  *
  * Not handled: edits and deletions (Telegram sends `edited_message` only when
  * asked for it, and never tells a bot about a deletion), reactions.
@@ -170,7 +172,9 @@ export class TelegramConversationMessages {
     }
     const chosen = chosenOptionIds(poll, answer.option_ids);
     if (!chosen) return false;
-    const value = chosen.length === 1 ? { optionId: chosen[0] } : { optionIds: chosen };
+    // A multiple-answer poll always answers `{ optionIds }` (the kernel's form
+    // for an approval ballot), a single-choice one `{ optionId }`.
+    const value = poll.multipleAnswers === true || chosen.length > 1 ? { optionIds: chosen } : { optionId: chosen[0] };
     return this.send({
       channelId: CHANNEL_ID_PLACEHOLDER,
       channelType: TELEGRAM_EVENT_CHANNEL_TYPE,

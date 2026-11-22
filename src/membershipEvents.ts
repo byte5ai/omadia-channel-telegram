@@ -47,35 +47,52 @@ export class TelegramMembershipEvents {
 
   /** People joined (or were added to) the group. `date`: Unix seconds of the platform event. */
   joined(chat: TelegramChat, users: readonly TelegramUser[], date: number): void {
-    const members = this.fresh(chat.id, humans(users), 'joined');
-    if (members.length > 0) this.send({ kind: 'members_added', ...base(chat, members, date) });
+    const fresh = this.fresh(chat.id, humans(users), 'joined');
+    if (fresh.length === 0) return;
+    this.sendOnce(chat.id, fresh, 'joined', { kind: 'members_added', ...base(chat, fresh.map(userRef), date) });
   }
 
   /** People left (or were removed from) the group. */
   left(chat: TelegramChat, users: readonly TelegramUser[], date: number): void {
-    const members = this.fresh(chat.id, humans(users), 'left');
-    if (members.length > 0) this.send({ kind: 'members_removed', ...base(chat, members, date) });
+    const fresh = this.fresh(chat.id, humans(users), 'left');
+    if (fresh.length === 0) return;
+    this.sendOnce(chat.id, fresh, 'left', { kind: 'members_removed', ...base(chat, fresh.map(userRef), date) });
   }
 
   /** This bot was added to the group by `addedBy` (a paired person: the group is activated). */
   botAdded(chat: TelegramChat, bot: TelegramUser, addedBy: TelegramUser, date: number): void {
     if (this.fresh(chat.id, [bot], 'bot_added').length === 0) return;
-    this.send({ kind: 'bot_added', ...base(chat, [userRef(bot)], date), addedBy: userRef(addedBy) });
+    this.sendOnce(chat.id, [bot], 'bot_added', {
+      kind: 'bot_added',
+      ...base(chat, [userRef(bot)], date),
+      addedBy: userRef(addedBy),
+    });
   }
 
-  /** The users whose change is not a repeat; remembers them as emitted. */
-  private fresh(chatId: number, users: readonly TelegramUser[], direction: Direction): ChannelUserRef[] {
+  /** The users whose change is not a repeat of one already emitted. */
+  private fresh(chatId: number, users: readonly TelegramUser[], direction: Direction): TelegramUser[] {
     const now = this.now();
     this.prune(now);
-    return users
-      .filter((user) => {
-        const key = `${String(chatId)}:${String(user.id)}`;
-        const last = this.lastEmitted.get(key);
-        if (last && last.direction === direction && now - last.at < this.dedupeMs) return false;
-        this.lastEmitted.set(key, { direction, at: now });
-        return true;
-      })
-      .map(userRef);
+    return users.filter((user) => {
+      const last = this.lastEmitted.get(dedupeKey(chatId, user));
+      return !(last && last.direction === direction && now - last.at < this.dedupeMs);
+    });
+  }
+
+  /**
+   * Emit, and only once the kernel took it remember the change as emitted: a
+   * failed emit leaves the next copy (the `chat_member` update, another bot)
+   * free to go out.
+   */
+  private sendOnce(
+    chatId: number,
+    users: readonly TelegramUser[],
+    direction: Direction,
+    event: ConversationMembershipEvent,
+  ): void {
+    if (!this.send(event)) return;
+    const at = this.now();
+    for (const user of users) this.lastEmitted.set(dedupeKey(chatId, user), { direction, at });
   }
 
   private prune(now: number): void {
@@ -85,13 +102,19 @@ export class TelegramMembershipEvents {
     }
   }
 
-  private send(event: ConversationMembershipEvent): void {
+  private send(event: ConversationMembershipEvent): boolean {
     try {
       this.emit(event);
+      return true;
     } catch (err) {
       console.error('[telegram] membership event emit failed:', err instanceof Error ? err.message : String(err));
+      return false;
     }
   }
+}
+
+function dedupeKey(chatId: number, user: TelegramUser): string {
+  return `${String(chatId)}:${String(user.id)}`;
 }
 
 function humans(users: readonly TelegramUser[]): TelegramUser[] {

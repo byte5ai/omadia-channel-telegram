@@ -11,12 +11,14 @@
  *    `tg:<botId>`: the installation's own bot or an agent's own bot (spec
  *    2042 §5.3), or returns `unreachable`. It never posts as another identity.
  *    Without `asChannelKey` the installation's own bot posts.
- *  - `poll` (conversation send only, #8): a native, non-anonymous,
- *    single-choice Telegram poll (`sendPoll`) after the message text, so the
- *    hint for a written ballot stays readable. Votes come back as
- *    `card_answer` events (`poll_answer`, conversationMessages.ts). An invalid
- *    poll is refused and nothing is posted; a poll Telegram refuses after the
- *    text went out leaves the text, which still takes written ballots.
+ *  - `poll` (conversation send only, #8): a native, non-anonymous Telegram
+ *    poll (`sendPoll`) after the message text, so the hint for a written
+ *    ballot stays readable. Single choice unless the kernel's poll says
+ *    `multipleAnswers` (an approval vote). Votes come back as `card_answer`
+ *    events (`poll_answer`, conversationMessages.ts). An invalid poll is
+ *    refused and nothing is posted. A poll Telegram refuses after the text
+ *    went out is replaced by the options as text, which take written ballots.
+ *    A new poll for the same step (a runoff round) stops the older one first.
  *  - no `card`: Telegram shows none. The KERNEL then posts the question itself
  *    as numbered text (`renderCardAsText`), keeps it open and turns a typed
  *    reply into the typed `card_answer` event. This plugin has no card code.
@@ -57,6 +59,7 @@ import {
   TELEGRAM_POLL_OPTION_MAX,
   TELEGRAM_POLL_QUESTION_MAX,
   clip,
+  supersedes,
   type TelegramPollStore,
 } from './telegramPolls.js';
 
@@ -81,9 +84,10 @@ export const TELEGRAM_REACTION_EMOJI: Readonly<Record<ConversationReaction, stri
 export interface TelegramSendDeps {
   readonly emitter: Pick<TelegramEmitter, 'sendPosted' | 'sendAnswer' | 'sendSystem'>;
   /** This bot's Bot API client, for what is not a message (reactions, polls). */
-  readonly api: Pick<TelegramApiClient, 'setMessageReaction'> & Partial<Pick<TelegramApiClient, 'sendPoll'>>;
+  readonly api: Pick<TelegramApiClient, 'setMessageReaction'> &
+    Partial<Pick<TelegramApiClient, 'sendPoll' | 'stopPoll'>>;
   /** Where this bot remembers its polls, so a vote maps back to the kernel's ids. Absent = no polls. */
-  readonly polls?: Pick<TelegramPollStore, 'remember'>;
+  readonly polls?: Pick<TelegramPollStore, 'remember' | 'openInChat' | 'forget'>;
   readonly pairingStore: PairingStore;
   readonly dmPolicy: DmPolicy;
   /** `tg:<botId>`. */
@@ -193,7 +197,12 @@ class TelegramPoster {
     }
   }
 
-  /** The text (with the hint for a written ballot), then the native poll. */
+  /**
+   * The text (with the hint for a written ballot), then the native poll. An
+   * older open poll of the same step is stopped first. When Telegram refuses
+   * the poll, the options follow as text so the hint does not point at a
+   * poll nobody can see; the send is then delivered without `cardMessageId`.
+   */
   private async postPoll(
     chatId: number,
     message: TargetedMessage,
@@ -214,6 +223,8 @@ class TelegramPoster {
     } catch (err) {
       return classifyPostError(err, isDirect);
     }
+    await this.stopSuperseded(chatId, poll.pollId);
+    const multipleAnswers = isMultipleAnswers(poll);
     try {
       const posted = await sendPoll({
         chat_id: chatId,
@@ -221,7 +232,7 @@ class TelegramPoster {
         options: poll.options.map((o) => ({ text: clip(o.label, TELEGRAM_POLL_OPTION_MAX) })),
         // Only a non-anonymous poll reports who voted.
         is_anonymous: false,
-        allows_multiple_answers: false,
+        allows_multiple_answers: multipleAnswers,
       });
       if (posted.poll?.id) {
         await polls.remember({
@@ -231,6 +242,7 @@ class TelegramPoster {
           messageId: posted.message_id,
           optionIds: poll.options.map((o) => o.id),
           postedAt: new Date().toISOString(),
+          ...(multipleAnswers ? { multipleAnswers: true } : {}),
         });
       } else {
         console.warn(`[telegram] sendPoll for ${poll.pollId} returned no poll id — its votes cannot be reported`);
@@ -242,15 +254,51 @@ class TelegramPoster {
         conversationId: String(chatId),
       };
     } catch (err) {
-      // The text with the ballot hint is out: written ballots still count.
       console.warn(
-        `[telegram] sendPoll for ${poll.pollId} in chat ${String(chatId)} failed: ${err instanceof Error ? err.message : String(err)} — the question stays as text`,
+        `[telegram] sendPoll for ${poll.pollId} in chat ${String(chatId)} failed: ${errorMessage(err)} — the options follow as text`,
       );
+      await this.postOptionsAsText(chatId, poll);
       return {
         outcome: 'delivered',
         ...(textId !== undefined ? { messageId: String(textId) } : {}),
         conversationId: String(chatId),
       };
+    }
+  }
+
+  /**
+   * Stop this chat's open polls for the same step (an earlier round): their
+   * votes would no longer count. Best-effort: a failure is logged, never fails
+   * the send, and the old record is dropped either way.
+   */
+  private async stopSuperseded(chatId: number, pollId: string): Promise<void> {
+    const { polls } = this.deps;
+    if (!polls) return;
+    let open: Awaited<ReturnType<typeof polls.openInChat>>;
+    try {
+      open = (await polls.openInChat(chatId)).filter((p) => supersedes(pollId, p.pollId));
+    } catch (err) {
+      console.warn(`[telegram] open polls of chat ${String(chatId)} unreadable: ${errorMessage(err)}`);
+      return;
+    }
+    for (const old of open) {
+      try {
+        if (!this.deps.api.stopPoll) throw new Error('this client cannot stop polls');
+        await this.deps.api.stopPoll({ chat_id: chatId, message_id: old.messageId });
+        console.log(`[telegram] poll ${old.pollId} stopped: replaced by ${pollId} in chat ${String(chatId)}`);
+      } catch (err) {
+        console.warn(`[telegram] poll ${old.pollId} in chat ${String(chatId)} not stopped: ${errorMessage(err)}`);
+      }
+      await polls.forget(old);
+    }
+  }
+
+  /** The options as text, for written ballots, when the native poll did not go out. */
+  private async postOptionsAsText(chatId: number, poll: NonNullable<TargetedMessage['poll']>): Promise<void> {
+    try {
+      await this.deps.emitter.sendPosted(chatId, { text: optionsAsText(poll) });
+    } catch (err) {
+      console.warn(`[telegram] options of ${poll.pollId} not posted as text either: ${errorMessage(err)}`);
     }
   }
 
@@ -268,6 +316,25 @@ class TelegramPoster {
       return unreachable('channel_error', err instanceof Error ? err.message : String(err));
     }
   }
+}
+
+/**
+ * Several options may be chosen (an approval vote). Read structurally: the
+ * field is in `TargetedPoll` only since plugin-api 1.84.0 / channel-sdk 0.3.10
+ * (omadia#2155); an older kernel never sets it and every poll stays single
+ * choice.
+ */
+export function isMultipleAnswers(poll: NonNullable<TargetedMessage['poll']>): boolean {
+  return (poll as { readonly multipleAnswers?: unknown }).multipleAnswers === true;
+}
+
+/** The question and each option with its id, the form a written ballot names. */
+export function optionsAsText(poll: NonNullable<TargetedMessage['poll']>): string {
+  return [`✍️ ${poll.question.trim()}`, ...poll.options.map((o) => `${o.id} — ${o.label.trim()}`)].join('\n');
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** Why Telegram cannot show this poll, or undefined. Labels are clipped, not refused. */
