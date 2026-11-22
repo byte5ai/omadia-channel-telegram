@@ -72,6 +72,10 @@ export class TelegramPollStore {
     private readonly memory: MemoryStoreShim,
     private readonly botId: number,
     private readonly now: () => number = Date.now,
+    /** Stops a poll whose record is dropped for age or the per-chat cap, so
+     *  nobody keeps voting into a poll whose answers no longer map.
+     *  Best-effort; a failure is logged. */
+    private readonly stopDropped?: (poll: PostedPoll) => Promise<void>,
   ) {}
 
   async remember(poll: PostedPoll): Promise<void> {
@@ -148,6 +152,14 @@ export class TelegramPollStore {
       const kept = fresh.slice(-MAX_OPEN_POLLS_PER_CHAT);
       const dropped = changed.filter((e) => !kept.includes(e));
       for (const e of dropped) {
+        const poll = this.stopDropped ? await this.find(e.telegramPollId) : undefined;
+        if (poll && this.stopDropped) {
+          try {
+            await this.stopDropped(poll);
+          } catch (err) {
+            console.warn(`[telegram] dropped poll ${poll.pollId} in chat ${String(chatId)} not stopped: ${errorMessage(err)}`);
+          }
+        }
         this.loaded.delete(e.telegramPollId);
         await this.deleteRecord(e.telegramPollId);
       }

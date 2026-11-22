@@ -268,8 +268,9 @@ class TelegramPoster {
 
   /**
    * Stop this chat's open polls for the same step (an earlier round): their
-   * votes would no longer count. Best-effort: a failure is logged, never fails
-   * the send, and the old record is dropped either way.
+   * votes would no longer count. Best-effort: a failure is logged and never
+   * fails the send; the record of a poll that could not be stopped is kept, so
+   * the next poll of the step tries again (and its answers still map).
    */
   private async stopSuperseded(chatId: number, pollId: string): Promise<void> {
     const { polls } = this.deps;
@@ -288,6 +289,7 @@ class TelegramPoster {
         console.log(`[telegram] poll ${old.pollId} stopped: replaced by ${pollId} in chat ${String(chatId)}`);
       } catch (err) {
         console.warn(`[telegram] poll ${old.pollId} in chat ${String(chatId)} not stopped: ${errorMessage(err)}`);
+        continue;
       }
       await polls.forget(old);
     }

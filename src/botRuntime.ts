@@ -118,7 +118,9 @@ export function createBotRuntime(
   const rosterProvider = new TelegramRosterProvider(api, shared.memberTracker, me.id);
   const conversationMessages = conversationMessagesFor(shared, me.id);
   // Per bot: Telegram's poll ids are the sending bot's, and only it gets the votes.
-  const polls = new TelegramPollStore(shared.memoryStore, me.id);
+  const polls = new TelegramPollStore(shared.memoryStore, me.id, Date.now, async (poll) => {
+    await api.stopPoll({ chat_id: poll.chatId, message_id: poll.messageId });
+  });
   const bot = new TelegramBot({
     api,
     chatAgent: shared.chatAgent,

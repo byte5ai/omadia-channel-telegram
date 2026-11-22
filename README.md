@@ -186,12 +186,14 @@ plugin has no card code. What it provides for that:
     before the last `:`, the facilitator's `<stepId>:<round>`) with an open
     poll of the same chat stops that older poll first
     ([`stopPoll`](https://core.telegram.org/bots/api#stoppoll)), best-effort:
-    a failure is logged and never fails the send.
+    a failure is logged and never fails the send; the old poll's record stays
+    until a later stop succeeds.
   - **A poll Telegram refuses** after the text went out is followed by the
     options as text (`A — Berlin`, …) for written ballots; the send is
     reported delivered without `cardMessageId`.
   - Poll records are deleted when a poll is stopped or replaced, dropped
-    after 30 days, and at most 20 open polls are kept per chat.
+    after 30 days, and at most 20 open polls are kept per chat; a poll
+    dropped for age or the cap is stopped on Telegram as well.
 - **Reactions instead of echoes** (spec 2043 §5.14): the conversation send
   implements `react`, so a facilitator records a contribution quietly with a
   👍 on the person's message instead of posting an echo. It calls the Bot API
@@ -251,7 +253,7 @@ the agent's page, `tg:<botId>`). What the plugin gives the kernel for that:
 
 | Requirement | Telegram | Closest behaviour |
 |---|---|---|
-| Every group message reaches the facilitator | With privacy mode **on** (BotFather default) a bot gets only mentions, commands, replies to it and service messages | Make the facilitator's bot an **administrator** of the group (admins get every message), or `/setprivacy` → Disable in @BotFather and then **remove and re-add** the bot (the setting applies from the next join). Readiness says `consent_missing` until one of the two holds; privacy off without admin rights is reported `ready` with `verified: false`, because the Bot API cannot tell whether the bot was re-added, until the bot has read a message in the group that did not address it (process-local proof, gone after a restart) |
+| Every group message reaches the facilitator | With privacy mode **on** (BotFather default) a bot gets only mentions, commands, replies to it and service messages | Make the facilitator's bot an **administrator** of the group (admins get every message), or `/setprivacy` → Disable in @BotFather and then **remove and re-add** the bot (the setting applies from the next join). Readiness says `consent_missing` until one of the two holds; privacy off without admin rights is reported `ready` with `verified: false`, because the Bot API cannot tell whether the bot was re-added, until the bot has read a message in the group that did not address it (process-local proof, gone after a restart or when the bot's membership in the group changes) |
 | Several agent bots in one group with privacy off | Every bot sees every bare `/command` | Use `/command@Bot` (see `/agent` above) |
 | Approval votes as polls | Telegram polls are single or multiple choice; only a kernel with `SendPoll.multipleAnswers` (plugin-api 1.84.0, omadia#2155) says which | With the flag: a multiple-answer poll. **On an older kernel every poll is single choice, so in an approval vote one tap replaces a written multi-option ballot**; there is no robust signal in the poll itself (the hint text is not one), so write several approvals instead of tapping |
 | Ranked and other votes as polls | Telegram has no ranked poll | The facilitator posts no poll for them; the ballot is written in the chat |

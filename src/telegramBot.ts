@@ -752,6 +752,9 @@ export class TelegramBot {
     const isGroup =
       upd.chat.type === 'group' || upd.chat.type === 'supergroup';
     if (!isGroup) return; // Private/channel transitions don't matter
+    // Removed, re-added or promoted/demoted: privacy mode may differ now, so
+    // the "read an unaddressed message" proof has to come again.
+    this.unaddressedSeen.delete(upd.chat.id);
 
     const wasAbsent =
       upd.old_chat_member.status === 'left' ||

@@ -36,6 +36,8 @@ import { BOT_ID, BOT_USERNAME, groupText, harness, memoryStore, privateText, rec
 const GROUP = -100900;
 const BOT_KEY = `tg:${String(BOT_ID)}`;
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** `MAX_OPEN_POLLS_PER_CHAT` in src/telegramPolls.ts. */
+const MAX_OPEN_POLLS_PER_CHAT = 20;
 const activation = (chatId: number) => ({
   chatId, chatTitle: 'Team', chatType: 'supergroup' as const, activatedBy: 'h', activatedVia: 'auto' as const, activatedAt: '2026-11-21T00:00:00Z',
 });
@@ -137,7 +139,11 @@ describe('a newer poll of the same step stops the older one', () => {
     assert.equal(out.outcome, 'delivered');
     assert.equal(out.outcome === 'delivered' && out.cardMessageId, '501');
     assert.equal(r.stopCalls.length, 1);
-    assert.deepEqual((await r.polls.openInChat(GROUP)).map((p) => p.pollId), ['step-1:2'], 'the old record is dropped anyway');
+    assert.deepEqual(
+      (await r.polls.openInChat(GROUP)).map((p) => p.pollId),
+      ['step-1:1', 'step-1:2'],
+      'a poll that could not be stopped keeps its record, so the next round tries again',
+    );
   });
 });
 
@@ -195,6 +201,30 @@ describe('poll records are bounded', () => {
     assert.deepEqual((await store.openInChat(GROUP)).map((p) => p.telegramPollId), ['new']);
     assert.equal([...files.keys()].some((k) => k.endsWith('/old.json')), false, 'the expired record is deleted');
     assert.equal(await new TelegramPollStore(memoryStore(files), BOT_ID).find('old'), undefined);
+  });
+
+  it('a poll dropped for age or the per-chat cap is stopped on Telegram', async () => {
+    const files = new Map<string, string>();
+    let now = Date.parse('2026-11-01T00:00:00Z');
+    const stopped: string[] = [];
+    let failOnce = true;
+    const store = new TelegramPollStore(memoryStore(files), BOT_ID, () => now, async (poll) => {
+      stopped.push(poll.pollId);
+      if (failOnce) {
+        failOnce = false;
+        throw new Error('poll has already been closed');
+      }
+    });
+    const posted = (id: string, at: number): PostedPoll => ({
+      telegramPollId: id, pollId: `s-${id}:1`, chatId: GROUP, messageId: 1, optionIds: ['A', 'B'], postedAt: new Date(at).toISOString(),
+    });
+    await store.remember(posted('aged', now));
+    now += 31 * DAY_MS;
+    await store.remember(posted('fresh', now));
+    assert.deepEqual(stopped, ['s-aged:1'], 'the aged poll is stopped (a failure is only logged)');
+    for (let i = 0; i < MAX_OPEN_POLLS_PER_CHAT; i += 1) await store.remember(posted(`n${String(i)}`, now + i));
+    assert.deepEqual(stopped, ['s-aged:1', 's-fresh:1'], 'the oldest beyond the cap is stopped');
+    assert.equal((await store.openInChat(GROUP)).length, MAX_OPEN_POLLS_PER_CHAT);
   });
 });
 
@@ -258,6 +288,25 @@ describe('readiness with a failing activation lookup and proven privacy off', ()
     assert.equal(h.bot.hasReadUnaddressedMessage(GROUP), false);
     await h.bot.handleUpdate(groupText('A, please', GROUP, 7));
     assert.equal(h.bot.hasReadUnaddressedMessage(GROUP), true);
+  });
+
+  it('a membership change of the bot in the group resets the proof', async () => {
+    const h = harness();
+    await h.pairingStore.putGroupActivation(activation(GROUP));
+    await h.bot.handleUpdate(groupText('A, please', GROUP, 7));
+    assert.equal(h.bot.hasReadUnaddressedMessage(GROUP), true);
+    const me = { id: BOT_ID, is_bot: true, first_name: 'Me' };
+    await h.bot.handleUpdate({
+      update_id: nextUpdate++,
+      my_chat_member: {
+        chat: { id: GROUP, type: 'supergroup', title: 'Team' },
+        from: person(7, 'Anna'),
+        date: 1_700_000_000,
+        old_chat_member: { user: me, status: 'member' },
+        new_chat_member: { user: me, status: 'left' },
+      },
+    });
+    assert.equal(h.bot.hasReadUnaddressedMessage(GROUP), false);
   });
 });
 

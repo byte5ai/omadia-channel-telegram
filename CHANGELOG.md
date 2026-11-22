@@ -29,20 +29,23 @@ Suggested version: 0.7.0.
   choice (README gap table).
 - **Runoff rounds stop the earlier poll**: a new poll of the same step
   (`<stepId>:<round>`) stops the open one with `stopPoll` first
-  (best-effort, never fails the send) and drops its record. Closing a poll
+  (best-effort, never fails the send) and drops its record; a poll that
+  could not be stopped keeps its record, so the next round tries again. Closing a poll
   when a step ends is a documented gap: the kernel sends nothing for it.
 - **A refused poll** is followed by the options as text, so the ballot hint
   never points at a poll nobody sees; reported without `cardMessageId`.
 - **Poll answers in order**: one person's answers in one poll are handled one
   after another (a webhook delivers them concurrently).
 - **Bounded poll records**: deleted when stopped or replaced, dropped after
-  30 days or beyond 20 open polls per chat; the in-memory cache holds 500.
+  30 days or beyond 20 open polls per chat (such a poll is stopped on
+  Telegram too); the in-memory cache holds 500.
 - **`replyToMessageId` on private turns** (`TurnOrigin`, channel-sdk 0.3.11 /
   plugin-api 1.85.0, omadia#2157): a reply to a reminder the bot sent names
   the same id the send reported as `messageId`.
 - **Readiness**: a failing activation lookup is `graph_error` (and no
   capability snapshot) instead of a rejected check; privacy off is
-  `verified` once the bot has read a message there that did not address it.
+  `verified` once the bot has read a message there that did not address it
+  (reset when the bot's membership in the group changes).
 - **Membership events**: `members_added`, `members_removed` and `bot_added`
   (with who added the bot) for activated groups; bots left out, duplicates
   (notice plus `chat_member`, or several bots) dropped within 60 s. A change
