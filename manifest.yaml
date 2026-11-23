@@ -125,6 +125,11 @@ setup:
       help: "Der Name, mit dem der Bot das System in seinen eigenen Texten nennt: Willkommen nach dem Pairing (\"Willkommen zum <Name> System\"), Begrüßung, Hinweis für nicht gekoppelte Nutzer, Gruppen-Freischaltung. Leer → `omadia`."
       required: false
       default: "omadia"
+    - key: "telegram_admin_token"
+      type: "secret"
+      label: "Admin-Token"
+      help: "Bearer-Token für die Admin-Oberfläche unter `/api/telegram/admin/ui/` (Pairing-Links, Gruppen). Wird verschlüsselt im Plugin-Vault gespeichert (Vault-Key `telegram_admin_token`) und nie geloggt. Leer lassen → das Plugin erzeugt beim ersten Start einen zufälligen Token, den niemand kennt; um die Admin-Oberfläche zu nutzen oder den Token zu rotieren, hier einen eigenen setzen."
+      required: false
 
 playbook:
   when_to_use: |

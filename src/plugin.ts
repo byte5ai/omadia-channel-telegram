@@ -19,6 +19,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { ensureAdminToken } from './adminToken.js';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -317,26 +318,11 @@ export async function activate(
   const webhookMode: 'webhook' | 'long-poll' =
     defaultBot.mode() === 'webhook' ? 'webhook' : 'long-poll';
   // Admin token gates the operator-admin surface (the Bearer the admin UI's
-  // login form sends). There is no setup-form field and no env var for it:
-  // it's auto-generated on first activation, persisted to the vault, and
-  // LOGGED IN CLEARTEXT once so the operator can copy it from the middleware
-  // boot log and paste it into the admin UI login. Subsequent activations
-  // reuse the stored value and don't re-log it. To rotate: delete the
-  // telegram_admin_token vault key and reactivate.
-  //
-  // NOTE: this deliberately logs a secret in cleartext (explicit operator
-  // choice for this deployment). Log sinks that fan out — aggregators, CI,
-  // screenshots — will capture it. Requires permissions.secrets.runtime_write
-  // (gates ctx.secrets.set).
-  let adminToken = await ctx.secrets.get('telegram_admin_token');
-  if (!adminToken && ctx.secrets.set) {
-    adminToken = randomBytes(32).toString('hex');
-    await ctx.secrets.set('telegram_admin_token', adminToken);
-    core.log(
-      'info',
-      `telegram_admin_token generated on first activation: ${adminToken} — paste this into the admin UI login (${WEBHOOK_PATH_PREFIX}/admin/ui/). Rotate by deleting the telegram_admin_token vault key and reactivating.`,
-    );
-  }
+  // login form sends). It is the secret setup field "Admin-Token" (vault key
+  // telegram_admin_token); without one a random token is generated and kept
+  // in the vault. It is never logged (live finding 2026-11-23): an operator
+  // sets their own in the plugin settings to reach the admin UI or rotate it.
+  const adminToken = await ensureAdminToken(ctx.secrets, (line) => core.log('info', line));
   if (adminToken && me.username) {
     // Mount UI router FIRST (more specific prefix). Express's route
     // registry is first-match-wins per prefix; if the broader admin
@@ -394,7 +380,7 @@ export async function activate(
     );
     core.log(
       'info',
-      `telegram admin UI login at ${WEBHOOK_PATH_PREFIX}/admin/ui/ — the admin token was logged in cleartext on its first-activation generation (grep "telegram_admin_token generated"). If lost, rotate: delete the telegram_admin_token vault key and reactivate.`,
+      `telegram admin UI login at ${WEBHOOK_PATH_PREFIX}/admin/ui/ — the token is the "Admin-Token" setup field (vault key telegram_admin_token); set or rotate it in the plugin settings.`,
     );
   } else if (!adminToken) {
     core.log(
