@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.4
+
+- **The admin token is never logged.** The first generated token used to be written to the boot log in cleartext. A token set through the setup API landed in the plain config and had no effect. It is now the secret setup field "Admin-Token" (vault key `telegram_admin_token`). Without one, a random token is generated and kept in the vault. To use the admin UI, or to rotate the token, set your own in the plugin settings.
+- **The group hears the activation notice when the adder cannot be written to.** An agent's own bot may not write first to a person who never opened a chat with it (403). The notice now goes to the group instead.
+
 ## 0.7.3
 
 - **0.7.2 did not activate when it declared public paths.** The kernel accepts a declared public path only under a prefix the plugin registered through `ctx.routes`. The webhooks were still mounted through `core.registerRouter`, so activation failed with "the plugin registered no routers". Both webhooks are now `ctx.routes` registrations with `auth: 'custom'`, at exactly `/api/telegram/webhook` and `/api/telegram/agent-bots`, and are removed on close. `createTelegramWebhookRouter` takes an optional `path` (default `/webhook`, unchanged for existing callers).

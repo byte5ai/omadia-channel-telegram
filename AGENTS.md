@@ -85,3 +85,7 @@ the built `dist/`, so build first).
   off until the bot has read an unaddressed message in the group; a failing
   activation lookup is `graph_error` (snapshot: none).
 
+
+## Admin token (0.7.4, live finding 2026-11-23)
+
+The admin router's bearer token is the secret setup field `telegram_admin_token` (vault). It is never logged. Without a value the plugin generates one and keeps it in the vault, and nobody knows it; an operator sets their own to use the admin UI or to rotate it. A group-activation notice that cannot go to the adder by DM (403 from an agent's own bot) goes to the group.
