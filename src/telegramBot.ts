@@ -816,15 +816,23 @@ export class TelegramBot {
     // captures the activation. Telegram delivers DMs to user IDs even
     // without a prior /start, since the user has chatted with the bot
     // before (via the pairing flow).
+    const notice = groupActivatedText(this.systemName, activation.chatTitle, systemLocaleOf(upd.from.language_code));
     try {
-      await this.emitter.sendSystem(
-        upd.from.id,
-        groupActivatedText(this.systemName, activation.chatTitle, systemLocaleOf(upd.from.language_code)),
-      );
+      await this.emitter.sendSystem(upd.from.id, notice);
     } catch (err) {
+      // An agent's own bot may never write first to a person who has not
+      // opened a chat with it (403). Then the group hears it instead, so the
+      // activation is not silent (live finding 2026-11-23).
       console.warn(
-        `[telegram] DM-confirm to harness=${adderBinding.harnessIdentityId} failed: ${err instanceof Error ? err.message : String(err)} (group still activated)`,
+        `[telegram] DM-confirm to harness=${adderBinding.harnessIdentityId} failed: ${err instanceof Error ? err.message : String(err)} (group still activated; posting the notice in the group)`,
       );
+      try {
+        await this.emitter.sendSystem(upd.chat.id, notice);
+      } catch (groupErr) {
+        console.warn(
+          `[telegram] group notice in chat=${String(upd.chat.id)} failed too: ${groupErr instanceof Error ? groupErr.message : String(groupErr)}`,
+        );
+      }
     }
   }
 

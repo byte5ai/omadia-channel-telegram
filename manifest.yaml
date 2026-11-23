@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-telegram"
   name: "Telegram Channel"
-  version: "0.7.3"
+  version: "0.7.4"
   kind: "channel"
   domain: "channel.telegram"
   description: "Telegram als zweiter First-Class-Channel von Omadia. Spricht die Telegram Bot API direkt (kein Drittanbieter-SDK), supports Webhook + Long-Polling-Fallback, Antworten als Klartext (Absender nur wo nötig, Beiträge anderer Agenten als \"Name: …\", Auswahl per Nummer statt Buttons), Agentenwahl per /agent, ehrlicher Gruppen-Roster (complete/partial/unknown), eigener Bot pro Agent möglich. Self-contained — keine `depends_on`-Beziehung. Validiert die @omadia/channel-sdk Contracts gegen ein Runtime ohne Bot-Framework."
@@ -125,6 +125,11 @@ setup:
       help: "Der Name, mit dem der Bot das System in seinen eigenen Texten nennt: Willkommen nach dem Pairing (\"Willkommen zum <Name> System\"), Begrüßung, Hinweis für nicht gekoppelte Nutzer, Gruppen-Freischaltung. Leer → `omadia`."
       required: false
       default: "omadia"
+    - key: "telegram_admin_token"
+      type: "secret"
+      label: "Admin-Token"
+      help: "Bearer-Token für die Admin-Oberfläche unter `/api/telegram/admin/ui/` (Pairing-Links, Gruppen). Wird verschlüsselt im Plugin-Vault gespeichert (Vault-Key `telegram_admin_token`) und nie geloggt. Leer lassen → das Plugin erzeugt beim ersten Start einen zufälligen Token, den niemand kennt; um die Admin-Oberfläche zu nutzen oder den Token zu rotieren, hier einen eigenen setzen."
+      required: false
 
 playbook:
   when_to_use: |
