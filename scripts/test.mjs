@@ -65,6 +65,8 @@ await build({
     '@omadia/channel-sdk',
     '@omadia/orchestrator',
     '@omadia/plugin-api',
+    // A real HTTP round-trip needs the real express (CJS; cannot be bundled into ESM).
+    'express',
   ],
 });
 
