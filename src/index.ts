@@ -38,6 +38,7 @@ export {
 } from './telegramEmitter.js';
 
 export { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
+export { OwnPosts } from './ownPosts.js';
 export { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 export { BOT_COMMANDS, registerBotCommands } from './botCommands.js';
 export { resolveAgentForTurn, type AgentResolution, type ChannelRouteLookup } from './agentResolution.js';
