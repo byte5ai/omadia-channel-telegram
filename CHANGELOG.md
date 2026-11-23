@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.2
+
+- **System name in the bot's own texts.** A new setup field `system_name`
+  (default `omadia`) names the system in the pairing welcome ("Willkommen zum
+  <Name> System" / "Welcome to the <Name> system", then the connected
+  identity), the bare `/start` greeting, the refusal for an unpaired DM and
+  the group-activation notice. The hard-coded "byte5 Harness" is gone. The
+  texts follow the user's Telegram language (en or de).
+- **Webhooks reachable behind the kernel's session gate.** The manifest
+  declares `/api/telegram/webhook` and `/api/telegram/agent-bots` as public
+  paths (each handler checks Telegram's secret header). Before, webhook mode
+  on an instance with the session gate answered every update `401
+  auth.missing`, so neither the installation's bot nor an agent bot ever
+  received a message. The operator grants the two paths on the plugin page.
+  The setup help now says the base URL is the middleware's origin, not the
+  web UI's (found live, omadia-channel-telegram#8).
+
 ## 0.7.1
 
 User-visible texts no longer say "Orchestrator" (spec 2042 §6 criterion 12, `docs/terminology.md`): the manifest description, the package description, the README and the admin page now speak of your agents and the agent runtime.
