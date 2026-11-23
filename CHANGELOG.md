@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.3
+
+- **0.7.2 did not activate when it declared public paths.** The kernel accepts a declared public path only under a prefix the plugin registered through `ctx.routes`. The webhooks were still mounted through `core.registerRouter`, so activation failed with "the plugin registered no routers". Both webhooks are now `ctx.routes` registrations with `auth: 'custom'`, at exactly `/api/telegram/webhook` and `/api/telegram/agent-bots`, and are removed on close. `createTelegramWebhookRouter` takes an optional `path` (default `/webhook`, unchanged for existing callers).
+
 ## 0.7.2
 
 - **System name in the bot's own texts.** A new setup field `system_name`
