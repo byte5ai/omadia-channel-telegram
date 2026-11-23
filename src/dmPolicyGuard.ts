@@ -23,6 +23,7 @@
  */
 
 import type { PairingStore } from './pairingStore.js';
+import { DEFAULT_SYSTEM_NAME, notPairedText, type SystemLocale } from './systemTexts.js';
 
 export type DmPolicy = 'open' | 'pairing' | 'disabled';
 
@@ -48,8 +49,6 @@ export interface DmPolicyDecision {
   refusal?: string;
 }
 
-const REFUSAL_NOT_PAIRED =
-  'Du bist noch nicht mit dem byte5 Harness verbunden. Bitte frag den Operator nach einem Pairing-Link.';
 
 /**
  * Returns whether the DM should proceed to the orchestrator turn, plus
@@ -62,6 +61,10 @@ export async function evaluateDmPolicy(input: {
   policy: DmPolicy;
   telegramUserId: number;
   store: PairingStore;
+  /** Names the system in the refusal; default "omadia". */
+  systemName?: string;
+  /** Language of the refusal; default German. */
+  locale?: SystemLocale;
 }): Promise<DmPolicyDecision> {
   switch (input.policy) {
     case 'open':
@@ -71,7 +74,10 @@ export async function evaluateDmPolicy(input: {
     case 'pairing': {
       const binding = await input.store.getDmBinding(input.telegramUserId);
       if (binding) return { allow: true };
-      return { allow: false, refusal: REFUSAL_NOT_PAIRED };
+      return {
+        allow: false,
+        refusal: notPairedText(input.systemName ?? DEFAULT_SYSTEM_NAME, input.locale ?? 'de'),
+      };
     }
   }
 }

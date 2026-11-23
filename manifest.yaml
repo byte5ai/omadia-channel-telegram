@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-telegram"
   name: "Telegram Channel"
-  version: "0.7.1"
+  version: "0.7.2"
   kind: "channel"
   domain: "channel.telegram"
   description: "Telegram als zweiter First-Class-Channel von Omadia. Spricht die Telegram Bot API direkt (kein Drittanbieter-SDK), supports Webhook + Long-Polling-Fallback, Antworten als Klartext (Absender nur wo nötig, Beiträge anderer Agenten als \"Name: …\", Auswahl per Nummer statt Buttons), Agentenwahl per /agent, ehrlicher Gruppen-Roster (complete/partial/unknown), eigener Bot pro Agent möglich. Self-contained — keine `depends_on`-Beziehung. Validiert die @omadia/channel-sdk Contracts gegen ein Runtime ohne Bot-Framework."
@@ -60,9 +60,11 @@ setup:
          messages (otherwise only commands and @mentions).
 
       ### 2. Public URL vs. long-polling
-      - **Public HTTPS host**: set **Public HTTPS Base-URL** to your origin
-        (e.g. `https://bot.example.com`). Telegram delivers updates to
-        `<base>/api/telegram/webhook`.
+      - **Public HTTPS host**: set **Public HTTPS Base-URL** to the origin of
+        the middleware (e.g. `https://bot.example.com`), not of the web UI.
+        Telegram delivers updates to `<base>/api/telegram/webhook`; grant the
+        public paths `/api/telegram/webhook` and `/api/telegram/agent-bots` on
+        the plugin page, or the kernel's session gate refuses them.
       - **No public host** (local dev): leave it empty → the bot uses
         long-polling (getUpdates), no tunnel needed.
 
@@ -86,9 +88,12 @@ setup:
          Nachrichten liest (sonst nur Befehle und @Erwähnungen).
 
       ### 2. Public-URL vs. Long-Polling
-      - **Öffentlicher HTTPS-Host**: **Public HTTPS Base-URL** auf deine Origin
-        setzen (z.B. `https://bot.example.com`). Telegram liefert Updates an
-        `<base>/api/telegram/webhook`.
+      - **Öffentlicher HTTPS-Host**: **Public HTTPS Base-URL** auf die Origin
+        der Middleware setzen (z.B. `https://bot.example.com`), nicht die der
+        Web-UI. Telegram liefert Updates an `<base>/api/telegram/webhook`; gib
+        auf der Plugin-Seite die öffentlichen Pfade `/api/telegram/webhook` und
+        `/api/telegram/agent-bots` frei, sonst weist die Session-Prüfung des
+        Kernels sie ab.
       - **Kein Public-Host** (lokale Dev): leer lassen → der Bot nutzt
         Long-Polling (getUpdates), kein Tunnel nötig.
 
@@ -106,7 +111,7 @@ setup:
     - key: "telegram_public_base_url"
       type: "string"
       label: "Public HTTPS Base-URL für den Webhook"
-      help: "Vollständige HTTPS-Origin auf der die Middleware öffentlich erreichbar ist (z.B. `https://bot.example.com`). Telegram registriert den Webhook unter `<base>/api/telegram/webhook` mit dem konfigurierten Secret-Token. Leer lassen → Plugin nutzt Long-Polling (getUpdates) als Fallback — gut für lokale dev ohne ngrok/cloudflared."
+      help: "Vollständige HTTPS-Origin, auf der die Middleware öffentlich erreichbar ist (z.B. `https://bot.example.com`), nicht die der Web-UI. Der Webhook braucht außerdem die Freigabe der öffentlichen Pfade `/api/telegram/webhook` und `/api/telegram/agent-bots` auf der Plugin-Seite. Telegram registriert den Webhook unter `<base>/api/telegram/webhook` mit dem konfigurierten Secret-Token. Leer lassen → Plugin nutzt Long-Polling (getUpdates) als Fallback — gut für lokale dev ohne ngrok/cloudflared."
       required: false
     - key: "dm_policy"
       type: "string"
@@ -114,6 +119,12 @@ setup:
       help: "Wer darf den Bot per Direct-Message anschreiben? `pairing` (default ab S+7.6, safer): Nutzer müssen erst via QR-Deeplink-Flow gekoppelt werden, ungebundene DMs bekommen 'Bitte erst koppeln'-Reply. `open`: jeder mit dem Bot-Username darf chatten (Verhalten vor S+7.6). `disabled`: keine DMs zugelassen, Bot ignoriert silent. Group-Auth ist davon unabhängig (Auto-Allowlist beim Bot-Add durch gepairten Operator via `my_chat_member`-Event)."
       required: false
       default: "pairing"
+    - key: "system_name"
+      type: "string"
+      label: "Name des Systems"
+      help: "Der Name, mit dem der Bot das System in seinen eigenen Texten nennt: Willkommen nach dem Pairing (\"Willkommen zum <Name> System\"), Begrüßung, Hinweis für nicht gekoppelte Nutzer, Gruppen-Freischaltung. Leer → `omadia`."
+      required: false
+      default: "omadia"
 
 playbook:
   when_to_use: |
@@ -157,6 +168,15 @@ permissions:
   network:
     outbound:
       - "api.telegram.org"
+  # The two webhook mounts. Telegram POSTs updates without an omadia session,
+  # so the kernel's session gate answers them 401 unless the operator grants
+  # these prefixes. Each handler authenticates the request itself: Telegram
+  # echoes the bot's webhook secret in `X-Telegram-Bot-Api-Secret-Token`, and
+  # a request without the right secret is refused before any update is read.
+  # The admin router (`/api/telegram/admin`) is deliberately NOT listed.
+  public_paths:
+    - "/api/telegram/webhook"
+    - "/api/telegram/agent-bots"
   filesystem:
     scratch: false
 
