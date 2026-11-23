@@ -26,6 +26,7 @@ import type { DmPolicy } from './dmPolicyGuard.js';
 import type { GroupMemberTracker } from './groupMemberTracker.js';
 import type { ChatAgent, TurnContextModule } from './kernel-types.js';
 import type { TelegramMembershipEvents } from './membershipEvents.js';
+import { OwnPosts } from './ownPosts.js';
 import { PairingStore } from './pairingStore.js';
 import type { PairingTokenRegistry } from './pairingTokens.js';
 import type { PersistentSpeakerHistoryStore } from './speakerHistory.js';
@@ -123,8 +124,12 @@ export function createBotRuntime(
   const polls = new TelegramPollStore(shared.memoryStore, me.id, Date.now, async (poll) => {
     await api.stopPoll({ chat_id: poll.chatId, message_id: poll.messageId });
   });
+  // Shared by the bot's turns and its send providers: a post a facilitator
+  // makes during a turn suppresses that turn's acknowledgement (telegram#8).
+  const ownPosts = new OwnPosts();
   const bot = new TelegramBot({
     api,
+    ownPosts,
     chatAgent: shared.chatAgent,
     channelResolver: shared.channelRoute,
     ...(conversationMessages ? { conversationMessages } : {}),
@@ -154,6 +159,7 @@ export function createBotRuntime(
     pairingStore,
     dmPolicy: shared.dmPolicy,
     botKey,
+    ownPosts,
   };
   const roster = new TelegramConversationRosterProvider({
     roster: rosterProvider,

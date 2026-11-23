@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.5
+
+- **No acknowledgement after the bot already posted in the turn.** A facilitator posts through its own bot while the turn runs (the handshake, the ballot). The pace acknowledgement ("Ich kümmere mich darum, das dauert einen Moment.") still followed and announced work the group had already seen (telegram#8 live run). The bot's send providers now note each delivered post per chat, and a turn whose bot posted into the chat since it started sends no acknowledgement. Same rule as Discord 0.5.4.
+
 ## 0.7.4
 
 - **The admin token is never logged.** The first generated token used to be written to the boot log in cleartext. A token set through the setup API landed in the plain config and had no effect. It is now the secret setup field "Admin-Token" (vault key `telegram_admin_token`). Without one, a random token is generated and kept in the vault. To use the admin UI, or to rotate the token, set your own in the plugin settings.

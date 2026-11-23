@@ -35,6 +35,7 @@ import {
   type ScopeId,
 } from '@omadia/channel-sdk';
 import { resolveAgentForTurn, type ChannelRouteLookup } from './agentResolution.js';
+import { OwnPosts } from './ownPosts.js';
 import { evaluateDmPolicy, type DmPolicy } from './dmPolicyGuard.js';
 import {
   DEFAULT_SYSTEM_NAME,
@@ -542,6 +543,11 @@ export class TelegramApiClient {
 
 export interface TelegramBotOptions {
   api: TelegramApiClient;
+  /**
+   * What this bot posted and when, shared with its send providers. A turn
+   * whose agent already posted into the chat sends no pace acknowledgement.
+   */
+  ownPosts?: OwnPosts;
   chatAgent: ChatAgent;
   history: ConversationHistoryStore;
   turnContext: TurnContextModule;
@@ -677,8 +683,10 @@ export class TelegramBot {
   private readonly unaddressedSeen = new Set<number>();
   private readonly agentBot: boolean;
   private readonly routineTurn: TelegramRoutineTurn | undefined;
+  private readonly ownPosts: OwnPosts;
   constructor(opts: TelegramBotOptions) {
     this.api = opts.api;
+    this.ownPosts = opts.ownPosts ?? new OwnPosts();
     this.chatAgent = opts.chatAgent;
     this.history = opts.history;
     this.turnContext = opts.turnContext;
@@ -1520,6 +1528,7 @@ export class TelegramBot {
         // trigger or routine the agent sets now delivers later.
         const inRoutineScope = <T,>(body: () => Promise<T>): Promise<T> =>
           this.routineTurn && userId ? this.routineTurn({ userId, chatId: input.chat.id })(body) : body();
+        const turnStartedAt = Date.now();
         const { result } = await runPacedTurn(
           () =>
             inRoutineScope(() => chatAgent.chat({
@@ -1549,7 +1558,11 @@ export class TelegramBot {
             // under the speaker the resolver announced. Without one there is
             // nobody to say it as: the typing indicator (renewed every 4 s)
             // carries the wait, which beats a line under a wrong or no name.
+            // A facilitator posts through this bot during its turn (the
+            // handshake, a ballot); an acknowledgement after that would
+            // announce work that was already shown (telegram#8).
             sendAck: async (text) => {
+              if (this.ownPosts.since(input.chat.id, turnStartedAt)) return;
               if (!announcedSpeaker) {
                 console.warn(`[telegram] pace acknowledgement skipped (chat=${String(input.chat.id)}): the resolver named no speaker`);
                 return;

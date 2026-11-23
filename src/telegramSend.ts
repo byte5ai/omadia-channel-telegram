@@ -53,6 +53,7 @@ import type { ConversationReaction } from '@omadia/plugin-api';
 import type { PairingStore } from './pairingStore.js';
 import type { TelegramApiClient } from './telegramBot.js';
 import type { TelegramEmitter } from './telegramEmitter.js';
+import type { OwnPosts } from './ownPosts.js';
 import {
   TELEGRAM_POLL_OPTIONS_MAX,
   TELEGRAM_POLL_OPTIONS_MIN,
@@ -92,6 +93,8 @@ export interface TelegramSendDeps {
   readonly dmPolicy: DmPolicy;
   /** `tg:<botId>`. */
   readonly botKey: string;
+  /** Where a delivered post is noted, so this bot's running turn sends no acknowledgement after it. */
+  readonly ownPosts?: Pick<OwnPosts, 'record'>;
 }
 
 /**
@@ -186,6 +189,7 @@ class TelegramPoster {
         text: message.text,
         ...(message.attachments ? { attachments: message.attachments } : {}),
       });
+      this.notePosted(chatId);
       return {
         outcome: 'delivered',
         // the Telegram message_id: what a reply to the message points at
@@ -223,6 +227,7 @@ class TelegramPoster {
     } catch (err) {
       return classifyPostError(err, isDirect);
     }
+    this.notePosted(chatId);
     await this.stopSuperseded(chatId, poll.pollId);
     const multipleAnswers = isMultipleAnswers(poll);
     try {
@@ -302,6 +307,10 @@ class TelegramPoster {
     } catch (err) {
       console.warn(`[telegram] options of ${poll.pollId} not posted as text either: ${errorMessage(err)}`);
     }
+  }
+
+  private notePosted(chatId: number): void {
+    this.deps.ownPosts?.record(chatId, Date.now());
   }
 
   async react(chatId: number, messageId: number, emoji: string): Promise<ConversationReactionOutcome> {
