@@ -34,7 +34,7 @@ relationship to other integrations.
 | Pairing | Token-based account pairing (`pairingStore.ts`, `pairingTokens.ts`) |
 | DM policy | `dmPolicyGuard.ts` |
 | Admin UI | `adminRouter.ts` + static assets under `ui/`, copied into `dist/` at build time |
-| Delegation | Every user turn delegated to the shared Conductor/orchestrator |
+| Delegation | Every user turn delegated to the shared agent runtime (Conductor) |
 
 This channel validates the `@omadia/channel-sdk` contracts against a runtime
 with no Bot Framework dependency — it's the SDK's proof that the contract
