@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1
+
+User-visible texts no longer say "Orchestrator" (spec 2042 §6 criterion 12, `docs/terminology.md`): the manifest description, the package description, the README and the admin page now speak of your agents and the agent runtime.
+
 ## 0.7.0
 
 Native facilitators in Telegram (byte5ai/omadia-channel-telegram#8, epic

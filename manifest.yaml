@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-telegram"
   name: "Telegram Channel"
-  version: "0.7.0"
+  version: "0.7.1"
   kind: "channel"
   domain: "channel.telegram"
   description: "Telegram als zweiter First-Class-Channel von Omadia. Spricht die Telegram Bot API direkt (kein Drittanbieter-SDK), supports Webhook + Long-Polling-Fallback, Antworten als Klartext (Absender nur wo nötig, Beiträge anderer Agenten als \"Name: …\", Auswahl per Nummer statt Buttons), Agentenwahl per /agent, ehrlicher Gruppen-Roster (complete/partial/unknown), eigener Bot pro Agent möglich. Self-contained — keine `depends_on`-Beziehung. Validiert die @omadia/channel-sdk Contracts gegen ein Runtime ohne Bot-Framework."
@@ -127,7 +127,7 @@ playbook:
     oder in Gruppen/Supergroups; Channel-Posts werden ignoriert. Der Channel
     ownt /api/telegram/webhook (in HTTPS-Webhook-Modus) oder pollt aktiv via
     getUpdates (LP-Modus). Gruppen-Roster via getChatAdministrators
-    (Bot-API-Limitierung — non-admin Members bleiben für den Orchestrator
+    (Bot-API-Limitierung — non-admin Members bleiben für die Agent-Runtime
     unsichtbar). Antworten sind Klartext ohne Buttons, Reaktionen oder
     Fußzeilen. Neben dem eigenen Bot der Installation kann jeder Agent einen
     eigenen Bot haben (Token auf der Agent-Seite in omadia, Schlüssel
