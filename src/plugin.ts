@@ -48,6 +48,7 @@ import {
   type SharedBotDeps,
 } from './botRuntime.js';
 import { parseDmPolicy, type DmPolicy } from './dmPolicyGuard.js';
+import { parseSystemName } from './systemTexts.js';
 import { createTelegramAgentBotsRouter, createTelegramWebhookRouter } from './messagesRouter.js';
 import { PairingStore } from './pairingStore.js';
 import { PairingTokenRegistry } from './pairingTokens.js';
@@ -179,6 +180,7 @@ export async function activate(
     memoryStore,
     channelRoute,
     dmPolicy,
+    systemName: parseSystemName(ctx.config.get<string>('system_name')),
     pairingStore,
     pairingTokens,
     speakerHistory,

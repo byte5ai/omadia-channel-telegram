@@ -36,6 +36,14 @@ import {
 } from '@omadia/channel-sdk';
 import { resolveAgentForTurn, type ChannelRouteLookup } from './agentResolution.js';
 import { evaluateDmPolicy, type DmPolicy } from './dmPolicyGuard.js';
+import {
+  DEFAULT_SYSTEM_NAME,
+  greetingText,
+  groupActivatedText,
+  pairedWelcomeText,
+  parseSystemName,
+  systemLocaleOf,
+} from './systemTexts.js';
 import type {
   ChatAgent,
   ChatParticipantsProvider,
@@ -567,6 +575,8 @@ export interface TelegramBotOptions {
   pairingTokens: PairingTokenRegistry;
   /** DM auth policy (S+7.6). Defaults to 'pairing' if not specified by caller. */
   dmPolicy?: DmPolicy;
+  /** The system the bot's own texts name (`system_name`); default "omadia". */
+  systemName?: string;
   /**
    * Bot identity (S+7.7+). Used to filter group messages so the bot only
    * answers when explicitly addressed (mention or reply) — necessary when
@@ -655,6 +665,7 @@ export class TelegramBot {
   private readonly pairingStore: PairingStore;
   private readonly pairingTokens: PairingTokenRegistry;
   private readonly dmPolicy: DmPolicy;
+  private readonly systemName: string;
   private readonly botIdentity: { id: number; username: string };
   private readonly channelResolver?: ChannelRouteLookup;
   private readonly conversationMessages?: TelegramConversationMessages;
@@ -688,6 +699,7 @@ export class TelegramBot {
     this.pairingStore = opts.pairingStore;
     this.pairingTokens = opts.pairingTokens;
     this.dmPolicy = opts.dmPolicy ?? 'pairing';
+    this.systemName = opts.systemName === undefined ? DEFAULT_SYSTEM_NAME : parseSystemName(opts.systemName);
     this.botIdentity = opts.botIdentity;
     if (opts.channelResolver) this.channelResolver = opts.channelResolver;
     if (opts.conversationMessages) this.conversationMessages = opts.conversationMessages;
@@ -807,7 +819,7 @@ export class TelegramBot {
     try {
       await this.emitter.sendSystem(
         upd.from.id,
-        `Gruppe aktiviert: Der byte5 Harness Bot ist jetzt freigeschaltet in der Gruppe „${activation.chatTitle}“. Schreib mich dort einfach an (mit @-Mention wenn der Privacy-Mode aktiv ist).`,
+        groupActivatedText(this.systemName, activation.chatTitle, systemLocaleOf(upd.from.language_code)),
       );
     } catch (err) {
       console.warn(
@@ -948,6 +960,8 @@ export class TelegramBot {
         policy: this.dmPolicy,
         telegramUserId: message.from.id,
         store: this.pairingStore,
+        systemName: this.systemName,
+        locale: systemLocaleOf(message.from.language_code),
       });
       if (!decision.allow) {
         if (decision.refusal) {
@@ -1330,7 +1344,7 @@ export class TelegramBot {
       // Bare /start with no token = first-time-greeting flow, not pairing.
       await this.emitter.sendSystem(
         input.chat.id,
-        'Hi! Ich bin der byte5 Harness Bot. Du kannst mich Sachen über deine Daten fragen.',
+        greetingText(this.systemName, systemLocaleOf(input.from.language_code)),
       );
       return;
     }
@@ -1367,13 +1381,7 @@ export class TelegramBot {
 
     await this.emitter.sendSystem(
       input.chat.id,
-      [
-        'Verbunden!',
-        '',
-        `Du bist jetzt mit dem byte5 Harness verbunden als ${pending.harnessIdentityLabel}.`,
-        '',
-        'Stell mir einfach eine Frage — ich antworte direkt.',
-      ].join('\n'),
+      pairedWelcomeText(this.systemName, pending.harnessIdentityLabel, systemLocaleOf(input.from.language_code)),
     );
   }
 

@@ -59,6 +59,8 @@ export interface SharedBotDeps {
   readonly memoryStore: MemoryStore;
   readonly channelRoute: ChannelRouteLookup;
   readonly dmPolicy: DmPolicy;
+  /** The system the bots' own texts name (`system_name`). */
+  readonly systemName: string;
   readonly pairingStore: PairingStore;
   readonly pairingTokens: PairingTokenRegistry;
   readonly speakerHistory: PersistentSpeakerHistoryStore;
@@ -137,6 +139,7 @@ export function createBotRuntime(
     pairingTokens: shared.pairingTokens,
     speakerHistory: shared.speakerHistory,
     dmPolicy: shared.dmPolicy,
+    systemName: shared.systemName,
     botIdentity: { id: me.id, username },
     agentBot,
     // A delivery the agent sets here goes out through this bot later.

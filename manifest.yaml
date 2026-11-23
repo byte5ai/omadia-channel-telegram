@@ -119,6 +119,12 @@ setup:
       help: "Wer darf den Bot per Direct-Message anschreiben? `pairing` (default ab S+7.6, safer): Nutzer müssen erst via QR-Deeplink-Flow gekoppelt werden, ungebundene DMs bekommen 'Bitte erst koppeln'-Reply. `open`: jeder mit dem Bot-Username darf chatten (Verhalten vor S+7.6). `disabled`: keine DMs zugelassen, Bot ignoriert silent. Group-Auth ist davon unabhängig (Auto-Allowlist beim Bot-Add durch gepairten Operator via `my_chat_member`-Event)."
       required: false
       default: "pairing"
+    - key: "system_name"
+      type: "string"
+      label: "Name des Systems"
+      help: "Der Name, mit dem der Bot das System in seinen eigenen Texten nennt: Willkommen nach dem Pairing (\"Willkommen zum <Name> System\"), Begrüßung, Hinweis für nicht gekoppelte Nutzer, Gruppen-Freischaltung. Leer → `omadia`."
+      required: false
+      default: "omadia"
 
 playbook:
   when_to_use: |
