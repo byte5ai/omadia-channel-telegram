@@ -22,13 +22,19 @@ export interface TelegramRouterDeps {
   bot: TelegramBot;
   /** Same value passed to `setWebhook({ secret_token })`. Required. */
   webhookSecret: string;
+  /**
+   * The route inside the router. Default `/webhook` (router mounted at
+   * `/api/telegram`); the plugin mounts it at `/api/telegram/webhook` itself
+   * and passes `/`, so the mount is exactly the declared public path.
+   */
+  path?: string;
 }
 
 export function createTelegramWebhookRouter(deps: TelegramRouterDeps): Router {
   const router = Router();
   // Telegram POSTs JSON; size hard-cap well above any realistic Update.
   router.use(express.json({ limit: '1mb' }));
-  router.post('/webhook', (req: Request, res: Response) => {
+  router.post(deps.path ?? '/webhook', (req: Request, res: Response) => {
     if (!verifySecretHeader(req, deps.webhookSecret)) {
       res.status(401).json({ ok: false, error: 'unauthorised' });
       return;

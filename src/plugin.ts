@@ -239,21 +239,31 @@ export async function activate(
   }
 
 
-  // Webhooks: agents' own bots under /api/telegram/agent-bots/<botId>/webhook
-  // (registered first, the more specific prefix), the installation's own bot
-  // under /api/telegram/webhook. Mounted even in long-poll mode, so a later
-  // public base URL needs no restart.
-  core.registerRouter(
-    ctx.agentId,
-    `${WEBHOOK_PATH_PREFIX}${AGENT_BOTS_PATH}`,
-    createTelegramAgentBotsRouter((botId) => {
-      const runtime = fleet.agentBotById(botId);
-      return runtime ? { bot: runtime.bot, webhookSecret: runtime.webhookSecret } : undefined;
-    }),
-  );
-  const router = createTelegramWebhookRouter({ bot, webhookSecret });
-  core.registerRouter(ctx.agentId, WEBHOOK_PATH_PREFIX, router);
-  core.log('info', `Telegram webhook router mounted at ${WEBHOOK_PATH_PREFIX}/webhook`);
+  // Webhooks: agents' own bots under /api/telegram/agent-bots/<botId>/webhook,
+  // the installation's own bot at /api/telegram/webhook. Mounted even in
+  // long-poll mode, so a later public base URL needs no restart.
+  //
+  // Through `ctx.routes` with `auth: 'custom'`, at exactly the two prefixes
+  // the manifest declares in `permissions.public_paths`: Telegram sends no
+  // omadia session, so the kernel serves these only as granted public paths,
+  // and only a prefix registered through `ctx.routes` can be one. Each
+  // handler checks Telegram's secret header before it reads an update.
+  const disposeWebhookRoutes = [
+    ctx.routes.register(
+      `${WEBHOOK_PATH_PREFIX}${AGENT_BOTS_PATH}`,
+      createTelegramAgentBotsRouter((botId) => {
+        const runtime = fleet.agentBotById(botId);
+        return runtime ? { bot: runtime.bot, webhookSecret: runtime.webhookSecret } : undefined;
+      }),
+      { auth: 'custom' },
+    ),
+    ctx.routes.register(
+      `${WEBHOOK_PATH_PREFIX}/webhook`,
+      createTelegramWebhookRouter({ bot, webhookSecret, path: '/' }),
+      { auth: 'custom' },
+    ),
+  ];
+  core.log('info', `Telegram webhook routes registered at ${WEBHOOK_PATH_PREFIX}/webhook and ${WEBHOOK_PATH_PREFIX}${AGENT_BOTS_PATH}`);
   await defaultBot.start();
 
   // Trigger and routine deliveries go out through the bot the conversation
@@ -400,6 +410,7 @@ export async function activate(
 
   return {
     close: async () => {
+      for (const dispose of disposeWebhookRoutes) dispose();
       if (typeof disposeProactiveSend === 'function') disposeProactiveSend();
       await fleet.stopAll();
       await defaultBot.stop();
