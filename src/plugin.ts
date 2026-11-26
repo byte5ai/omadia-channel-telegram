@@ -58,7 +58,18 @@ import { registerBotCommands } from './botCommands.js';
 import { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 import type { ChannelRouteLookup } from './agentResolution.js';
 import { createTelegramConversationSend, createTelegramTargetedSend } from './telegramSend.js';
-import { TelegramApiClient } from './telegramBot.js';
+import { TELEGRAM_CHANNEL_TYPE, TelegramApiClient } from './telegramBot.js';
+import { createTelegramChannelDirectory } from './channelKeyDirectory.js';
+import type { ChannelKeyDirectory } from '@omadia/channel-sdk';
+
+/** Kernel service that aggregates every channel's `ChannelKeyDirectory` (#2001). */
+const CHANNEL_DIRECTORY_SERVICE = 'channelDirectoryRegistry';
+
+/** The registry surface used here; the kernel class is not importable from a plugin. */
+interface ChannelDirectoryRegistryLike {
+  register(directory: ChannelKeyDirectory): void;
+  unregister(channelType: string): void;
+}
 import { TelegramMembershipEvents } from './membershipEvents.js';
 import { createTelegramMeetingSource, createTelegramReadinessProvider } from './telegramReadiness.js';
 
@@ -388,8 +399,31 @@ export async function activate(
     );
   }
 
+  // byte5ai/omadia#2001 — list the routable keys on /operator/channels, so an
+  // agent can be bound to a Telegram chat from the UI. Optional: a kernel
+  // without the registry still routes, the page just shows no Telegram row.
+  const directoryRegistry = ctx.services.get<ChannelDirectoryRegistryLike>(CHANNEL_DIRECTORY_SERVICE);
+  let unregisterDirectory: (() => void) | undefined;
+  if (directoryRegistry && me.username) {
+    directoryRegistry.register(
+      createTelegramChannelDirectory({
+        channelType: TELEGRAM_CHANNEL_TYPE,
+        originPluginId: ctx.agentId,
+        botUsername: me.username,
+        pairingStore,
+        onError: (what, err) =>
+          core.log('warn', `telegram channel directory: reading ${what} failed: ${err instanceof Error ? err.message : String(err)}`),
+      }),
+    );
+    unregisterDirectory = () => directoryRegistry.unregister(TELEGRAM_CHANNEL_TYPE);
+    core.log('info', 'telegram contributed its channel keys to /operator/channels');
+  } else {
+    core.log('info', 'channelDirectoryRegistry@1 not published — Telegram keys are not listed on /operator/channels');
+  }
+
   return {
     close: async () => {
+      unregisterDirectory?.();
       for (const dispose of disposeWebhookRoutes) dispose();
       if (typeof disposeProactiveSend === 'function') disposeProactiveSend();
       await fleet.stopAll();

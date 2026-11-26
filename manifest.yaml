@@ -239,6 +239,9 @@ integrations:
 #                           (`middleware/src/index.ts`), not by a plugin.
 #                           activate() throws when absent, but a `requires:`
 #                           entry could never resolve.
+#   - `channelDirectoryRegistry@1` — kernel-side; lists the bot, activated
+#                           groups and paired DMs on /operator/channels
+#                           (#2001). Absent: routing works, no listing.
 #   - `channelResolver@1` — per-turn Agent routing; also kernel-side, and
 #                           absence is survivable (a host without the registry
 #                           routes to the default chatAgent; with the registry
@@ -251,6 +254,7 @@ requires:
   - "chatAgent@^1"
   - "memoryStore@^1"
 optional_requires:
+  - "channelDirectoryRegistry@1"
   - "channelResolver@1"
   - "routinesIntegration@1"
   - "turnContext@1"

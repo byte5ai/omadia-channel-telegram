@@ -44,6 +44,7 @@ export {
   failureNoticeText,
   type TurnFailureKind,
 } from './failureNotices.js';
+export { createTelegramChannelDirectory, type TelegramChannelDirectoryDeps } from './channelKeyDirectory.js';
 export { markdownToTelegramHtml } from './markdownToHtml.js';
 export { splitForTelegram, splitPlainText, TELEGRAM_MESSAGE_LIMIT } from './messageSplit.js';
 export { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
