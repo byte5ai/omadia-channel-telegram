@@ -31,7 +31,7 @@ relationship to other integrations.
 | Pace | Typing indicator, one acknowledgement for long work under the agent's name (SDK `runPacedTurn`) |
 | Agent posts | Conversation and targeted send providers (`telegramSend.ts`); the kernel posts cards (and polls in DMs) as text and matches typed answers, the plugin supplies message ids and `created` events (`conversationMessages.ts`); group polls go out as native Telegram polls (`telegramPolls.ts`) |
 | Facilitation | Readiness per bot and group, the group's capability snapshot (`telegramReadiness.ts`), join/leave events (`membershipEvents.ts`) |
-| Pairing | Token-based account pairing (`pairingStore.ts`, `pairingTokens.ts`) |
+| Pairing | Token-based DM allow-list: a pairing link lets one Telegram account chat with the bot (`pairingStore.ts`, `pairingTokens.ts`). It does not link the account to an omadia user; that needs the kernel link of omadia ADR-0225 (byte5ai/omadia#1995). Turns run as the Telegram user. |
 | DM policy | `dmPolicyGuard.ts` |
 | Admin UI | `adminRouter.ts` + static assets under `ui/`, copied into `dist/` at build time |
 | Delegation | Every user turn delegated to the shared agent runtime (Conductor) |

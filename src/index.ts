@@ -116,7 +116,7 @@ export {
   type TelegramReadinessLookup,
 } from './telegramReadiness.js';
 
-export { greetingText, groupActivatedText, type GroupActivationFacts } from './systemTexts.js';
+export { greetingText, groupActivatedText, pairedWelcomeText, type GroupActivationFacts } from './systemTexts.js';
 export {
   FAIL_CLOSED_DM_POLICY,
   evaluateDmPolicy,

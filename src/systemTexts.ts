@@ -25,19 +25,26 @@ export function systemLocaleOf(languageCode: string | undefined): SystemLocale {
   return /^en\b/i.test(languageCode ?? '') ? 'en' : 'de';
 }
 
+/**
+ * The welcome after a pairing. The pairing allows this Telegram account to
+ * chat with the bot; it does not link it to an omadia user (that needs the
+ * kernel link of omadia ADR-0225, byte5ai/omadia#1995), so the text says
+ * "allowed", never "connected as". The operator's label is named as the
+ * pairing's label only.
+ */
 export function pairedWelcomeText(name: string, identityLabel: string, locale: SystemLocale): string {
   return locale === 'en'
     ? [
         `Welcome to the ${name} system!`,
         '',
-        `You are connected as ${identityLabel}.`,
+        `Your Telegram account may now chat with me (pairing "${identityLabel}").`,
         '',
         'Just ask me a question, I answer directly.',
       ].join('\n')
     : [
         `Willkommen zum ${name} System!`,
         '',
-        `Du bist verbunden als ${identityLabel}.`,
+        `Dein Telegram-Konto ist jetzt freigeschaltet (Pairing „${identityLabel}“).`,
         '',
         'Stell mir einfach eine Frage, ich antworte direkt.',
       ].join('\n');

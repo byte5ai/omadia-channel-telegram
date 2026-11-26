@@ -5,7 +5,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import { parseDmPolicy, parseStartCommand } from '@omadia/channel-telegram';
+import { pairedWelcomeText, parseDmPolicy, parseStartCommand } from '@omadia/channel-telegram';
 
 import { BOT_ID, BOT_USERNAME, harness, privateText, recordingApi } from './fakes.js';
 
@@ -100,5 +100,16 @@ describe('#1997 — the group activation notice', () => {
       assert.match(notice!, new RegExp(`Erwähne mich dort mit @${BOT_USERNAME}`));
       assert.doesNotMatch(notice!, /setprivacy/);
     }
+  });
+});
+
+describe('#1995 — the pairing welcome claims no link to an omadia user', () => {
+  it('says the account is allowed, not "connected as"', () => {
+    const de = pairedWelcomeText('omadia', 'Anna', 'de');
+    const en = pairedWelcomeText('omadia', 'Anna', 'en');
+    assert.match(de, /freigeschaltet/);
+    assert.match(en, /may now chat with me/);
+    assert.doesNotMatch(de, /verbunden als/i);
+    assert.doesNotMatch(en, /connected as/i);
   });
 });
