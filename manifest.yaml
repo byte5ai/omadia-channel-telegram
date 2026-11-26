@@ -180,6 +180,10 @@ permissions:
   memory:
     reads: []
     writes: []
+    # ADR-0256 (omadia#2232) — the top-level /memories tree this plugin owns
+    # through memoryStore@1: pairings, group members, speaker history, polls.
+    # No other plugin may read or change it.
+    trees: ["pairings"]
   graph:
     reads: []
     writes: []
