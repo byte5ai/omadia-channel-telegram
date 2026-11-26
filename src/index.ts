@@ -32,6 +32,7 @@ export {
   TELEGRAM_DECORATIONS,
   TELEGRAM_DECORATION_CHANNEL,
   TelegramEmitter,
+  type AnswerDelivery,
   conversationKeyOf,
   isEntityParseError,
   type EmissionRecord,
@@ -45,6 +46,12 @@ export {
   type TurnFailureKind,
 } from './failureNotices.js';
 export { createTelegramChannelDirectory, type TelegramChannelDirectoryDeps } from './channelKeyDirectory.js';
+export {
+  attachmentReaderOf,
+  attachmentsMissingText,
+  type AttachmentReadResult,
+  type AttachmentReader,
+} from './attachmentDelivery.js';
 export { markdownToTelegramHtml } from './markdownToHtml.js';
 export { splitForTelegram, splitPlainText, TELEGRAM_MESSAGE_LIMIT } from './messageSplit.js';
 export { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';

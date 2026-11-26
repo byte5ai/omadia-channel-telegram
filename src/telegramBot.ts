@@ -62,6 +62,7 @@ import {
   unreadableTurnNote,
   type UnreadableFile,
 } from './inboundFiles.js';
+import { attachmentsMissingNote, type AttachmentReader } from './attachmentDelivery.js';
 import { classifyTurnFailure, failureNoticeText, TelegramApiError } from './failureNotices.js';
 import {
   TelegramEmitter,
@@ -383,6 +384,16 @@ export class TelegramApiClient {
     return await this.call<TelegramMessage>('sendDocument', params);
   }
 
+  /** `sendPhoto` with the image uploaded (#1993). */
+  async uploadPhoto(params: TelegramUploadParams): Promise<TelegramMessage> {
+    return await this.callUpload<TelegramMessage>('sendPhoto', 'photo', params);
+  }
+
+  /** `sendDocument` with the file uploaded (#1993). */
+  async uploadDocument(params: TelegramUploadParams): Promise<TelegramMessage> {
+    return await this.callUpload<TelegramMessage>('sendDocument', 'document', params);
+  }
+
   /**
    * Send a native poll. https://core.telegram.org/bots/api#sendpoll
    * `options` are InputPollOption objects (Bot API 7.3+).
@@ -531,13 +542,37 @@ export class TelegramApiClient {
   }
 
   private async call<T>(method: string, params: unknown): Promise<T> {
+    return this.post<T>(method, {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+  }
+
+  /**
+   * A Bot API call with the file uploaded as multipart/form-data (#1993).
+   * Telegram fetches a file by URL only when it can reach the URL, and for
+   * `sendDocument` only GIF, PDF and ZIP; an upload works for every file.
+   */
+  private async callUpload<T>(
+    method: 'sendPhoto' | 'sendDocument',
+    field: 'photo' | 'document',
+    params: TelegramUploadParams,
+  ): Promise<T> {
+    const form = new FormData();
+    form.append('chat_id', String(params.chat_id));
+    if (params.caption) form.append('caption', params.caption);
+    if (params.parse_mode) form.append('parse_mode', params.parse_mode);
+    const blob = new Blob([params.file.bytes as Uint8Array<ArrayBuffer>], {
+      type: params.file.mediaType ?? 'application/octet-stream',
+    });
+    form.append(field, blob, params.file.fileName);
+    return this.post<T>(method, { body: form });
+  }
+
+  private async post<T>(method: string, init: { headers?: Record<string, string>; body: string | FormData }): Promise<T> {
     let res: Response;
     try {
-      res = await fetch(`${this.base}/${method}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
-      });
+      res = await fetch(`${this.base}/${method}`, { method: 'POST', ...init });
     } catch (err) {
       // Telegram not reached: still a delivery failure, never "the model".
       throw new TelegramApiError(method, undefined, err instanceof Error ? err.message : String(err));
@@ -553,6 +588,14 @@ export class TelegramApiClient {
     }
     return json.result;
   }
+}
+
+/** A file sent as an upload instead of by URL (#1993). */
+export interface TelegramUploadParams {
+  chat_id: number;
+  file: { bytes: Uint8Array; fileName: string; mediaType?: string };
+  caption?: string;
+  parse_mode?: 'MarkdownV2' | 'HTML';
 }
 
 // ---------------------------------------------------------------------------
@@ -629,6 +672,12 @@ export interface TelegramBotOptions {
    * this bot). Absent = the kernel publishes no routines (no database).
    */
   routineTurn?: TelegramRoutineTurn;
+  /**
+   * The kernel's attachment read seam (#1993, channel-sdk 0.3.16): the bytes
+   * of a file the kernel serves, uploaded instead of sent by URL. Absent on
+   * older kernels.
+   */
+  readAttachment?: AttachmentReader;
 }
 
 /** Telegram keeps the "typing…" state for about 5 s, so renew it every 4 s. No reply window. */
@@ -713,6 +762,7 @@ export class TelegramBot {
     this.invalidateRoster = opts.invalidateRoster;
     this.emitter = new TelegramEmitter({
       api: this.api,
+      ...(opts.readAttachment ? { readAttachment: opts.readAttachment } : {}),
       speakerHistory: opts.speakerHistory ?? new InMemorySpeakerHistoryStore(),
       ...(opts.onEmit ? { onEmit: opts.onEmit } : {}),
       ...(opts.agentBot ? { nativeIdentity: true } : {}),
@@ -1669,7 +1719,7 @@ export class TelegramBot {
           await this.emitter.sendSystem(input.chat.id, failureNoticeText('generic', locale));
           return;
         }
-        await this.emitter.sendAnswer(input.chat.id, result);
+        const delivery = await this.emitter.sendAnswer(input.chat.id, result);
         this.pendingReplies.remember(
           pendingReplyKey(input.chat.id, input.from?.id),
           result.interactive,
@@ -1687,7 +1737,12 @@ export class TelegramBot {
         if (!isBlockingInteractive && !isSystemNotice) {
           this.history.append(sessionScope, {
             userMessage: input.userMessage,
-            assistantAnswer: result.text,
+            // A file that did not arrive is in the history as missing, so the
+            // agent does not refer to it as delivered (#1993).
+            assistantAnswer:
+              delivery.missingAttachments.length > 0
+                ? `${result.text}\n\n${attachmentsMissingNote(delivery.missingAttachments)}`
+                : result.text,
             at: Date.now(),
           });
         }

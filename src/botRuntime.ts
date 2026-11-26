@@ -14,6 +14,7 @@
  * agent's answer is not this agent's previous turn), and the webhook secret.
  */
 
+import { attachmentReaderOf } from './attachmentDelivery.js';
 import { createHmac } from 'node:crypto';
 
 import type { MemoryStore, RoutinesIntegration } from '@omadia/plugin-api';
@@ -115,6 +116,8 @@ export function createBotRuntime(
   options: { readonly agentBot: boolean },
 ): TelegramBotRuntime {
   const { core, agentBot } = { core: shared.core, agentBot: options.agentBot };
+  // #1993 — the kernel's attachment read seam, feature-detected.
+  const readAttachment = attachmentReaderOf(core);
   const username = me.username ?? '';
   const botKey = telegramBotKey(me.id);
   const pairingStore = agentBot ? new PairingStore(shared.memoryStore, { agentBotId: me.id }) : shared.pairingStore;
@@ -147,13 +150,19 @@ export function createBotRuntime(
     systemName: shared.systemName,
     botIdentity: { id: me.id, username },
     agentBot,
+    ...(readAttachment ? { readAttachment } : {}),
     // A delivery the agent sets here goes out through this bot later.
     ...(shared.routines
       ? { routineTurn: createTelegramRoutineTurn(shared.routines, shared.channelId, agentBot ? botKey : undefined) }
       : {}),
   });
   const sendDeps: TelegramSendDeps = {
-    emitter: new TelegramEmitter({ api, speakerHistory: shared.speakerHistory, nativeIdentity: agentBot }),
+    emitter: new TelegramEmitter({
+      api,
+      speakerHistory: shared.speakerHistory,
+      nativeIdentity: agentBot,
+      ...(readAttachment ? { readAttachment } : {}),
+    }),
     api,
     polls,
     pairingStore,
