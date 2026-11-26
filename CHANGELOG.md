@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
 - **Long answers arrive in parts** (byte5ai/omadia#1989). An answer over Telegram's 4096-character limit was refused ("message is too long") and the fallback to plain text failed the same way, so the person got an error instead of the answer. The emitter now cuts the text before converting it to HTML, at a paragraph, line or space; every part is valid HTML on its own, and a code block across a cut is closed and opened again. Attachments follow the last part. Only an entity error ("can't parse entities") falls back to plain text now; any other refusal is not retried as plain text. A part never is an empty code block, and text that cannot be cut into valid HTML parts (a long fence line full of `<`) goes out as escaped plain text instead of failing.
 - **A failed turn shows a fixed notice, never the error** (byte5ai/omadia#2000). The apology used to repeat the error message (provider hosts, Bot API wording) and ended in a double period. It now names the kind in fixed words, in the person's language: the language model is not reachable, the answer could not be delivered, or something went wrong. A Bot API call that does not reach Telegram counts as a delivery failure. The full error is logged with the kind.
