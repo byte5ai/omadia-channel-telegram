@@ -161,6 +161,7 @@ describe('pace in the Telegram channel', () => {
     await h.bot.handleUpdate(privateText('hi'));
     await advance(30_000);
     assert.equal(h.api.sent.length, 1);
-    assert.match(String(h.api.sent[0]?.params['text']), /Fehler aufgetreten: boom/);
+    assert.match(String(h.api.sent[0]?.params['text']), /Fehler aufgetreten\./);
+    assert.doesNotMatch(String(h.api.sent[0]?.params['text']), /boom/);
   });
 });

@@ -31,6 +31,7 @@ import {
 } from '@omadia/channel-sdk';
 
 import { markdownToTelegramHtml } from './markdownToHtml.js';
+import { splitForTelegram, splitPlainText } from './messageSplit.js';
 import type { SemanticAnswer } from './kernel-types.js';
 import type { TelegramApiClient } from './telegramBot.js';
 
@@ -97,9 +98,8 @@ export class TelegramEmitter {
       conversationKey,
       speakerHistory: this.opts.speakerHistory,
     });
-    if (text.trim().length > 0) {
-      await this.sendHtmlOrPlain(chatId, markdownToTelegramHtml(text), speaker);
-    }
+    await this.sendText(chatId, text, speaker);
+    // Attachments follow the last part of the text.
     for (const attachment of answer.attachments ?? []) {
       await this.sendAttachment(chatId, attachment, speaker);
     }
@@ -108,7 +108,8 @@ export class TelegramEmitter {
   /**
    * A message the kernel posts on an agent's behalf (conversation or targeted
    * send): the bot IS that agent's identity, so the text goes out as it is,
-   * with no name line. Returns the Bot API `message_id` of the text, which a
+   * with no name line. Returns the Bot API `message_id` of the text (of its
+   * last part when it was split: that is where a question ends), which a
    * posted question is matched by.
    */
   async sendPosted(
@@ -116,10 +117,7 @@ export class TelegramEmitter {
     message: { readonly text: string; readonly attachments?: SemanticAnswer['attachments'] },
   ): Promise<number | undefined> {
     this.assertDecorationsDeclared();
-    const messageId =
-      message.text.trim().length > 0
-        ? await this.sendHtmlOrPlain(chatId, markdownToTelegramHtml(message.text), 'agent')
-        : undefined;
+    const messageId = await this.sendText(chatId, message.text, 'agent');
     for (const attachment of message.attachments ?? []) {
       await this.sendAttachment(chatId, attachment, 'agent');
     }
@@ -132,8 +130,27 @@ export class TelegramEmitter {
    * name, never markup.
    */
   async sendSystem(chatId: number, text: string): Promise<void> {
-    await this.opts.api.sendMessage({ chat_id: chatId, text });
-    this.opts.onEmit?.({ chatId, speaker: 'system', kind: 'text' });
+    for (const part of splitPlainText(text)) {
+      await this.opts.api.sendMessage({ chat_id: chatId, text: part });
+      this.opts.onEmit?.({ chatId, speaker: 'system', kind: 'text' });
+    }
+  }
+
+  /**
+   * Markdown text as one or more messages, each within Telegram's length
+   * limit (#1989). Returns the `message_id` of the last part, or undefined
+   * when there was no text.
+   */
+  private async sendText(
+    chatId: number,
+    markdown: string,
+    speaker: EmissionRecord['speaker'],
+  ): Promise<number | undefined> {
+    let lastId: number | undefined;
+    for (const html of splitForTelegram(markdown, markdownToTelegramHtml)) {
+      lastId = await this.sendHtmlOrPlain(chatId, html, speaker);
+    }
+    return lastId;
   }
 
   private async sendAttachment(
@@ -172,6 +189,8 @@ export class TelegramEmitter {
   /**
    * Send with `parse_mode: 'HTML'`, falling back to plain text when Telegram
    * rejects the entities, so an answer is never lost to a converter slip.
+   * Only an entity error falls back: any other refusal ("message is too
+   * long", a blocked chat) is not cured by plain text and is thrown.
    */
   private async sendHtmlOrPlain(
     chatId: number,
@@ -188,7 +207,7 @@ export class TelegramEmitter {
       });
     } catch (err) {
       const msg = errorMessage(err);
-      if (!/can'?t parse|parse entities|Bad Request/i.test(msg)) throw err;
+      if (!isEntityParseError(msg)) throw err;
       console.warn(
         `[telegram] HTML parse rejected by Telegram → retrying as plain text. detail=${msg}`,
       );
@@ -214,9 +233,9 @@ export class TelegramEmitter {
   }
 }
 
-/** The notice shown when the agent call itself failed and no answer exists. */
-export function failureNoticeText(detail: string): string {
-  return `Entschuldigung, beim Verarbeiten deiner Anfrage ist ein Fehler aufgetreten: ${detail}. Versuch es gleich nochmal oder stell die Frage anders.`;
+/** Telegram's answer to HTML it cannot parse ("can't parse entities: ..."). */
+export function isEntityParseError(message: string): boolean {
+  return /can'?t parse entities|can'?t find end of the entity|unsupported start tag|unexpected end tag/i.test(message);
 }
 
 export function conversationKeyOf(chatId: number): string {

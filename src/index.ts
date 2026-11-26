@@ -32,11 +32,19 @@ export {
   TELEGRAM_DECORATION_CHANNEL,
   TelegramEmitter,
   conversationKeyOf,
-  failureNoticeText,
+  isEntityParseError,
   type EmissionRecord,
   type TelegramEmitterOptions,
 } from './telegramEmitter.js';
 
+export {
+  TelegramApiError,
+  classifyTurnFailure,
+  failureNoticeText,
+  type TurnFailureKind,
+} from './failureNotices.js';
+export { markdownToTelegramHtml } from './markdownToHtml.js';
+export { splitForTelegram, splitPlainText, TELEGRAM_MESSAGE_LIMIT } from './messageSplit.js';
 export { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
 export { OwnPosts } from './ownPosts.js';
 export { PersistentSpeakerHistoryStore } from './speakerHistory.js';
