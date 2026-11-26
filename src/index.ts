@@ -16,6 +16,7 @@ export {
   TelegramApiClient,
   TelegramBot,
   TELEGRAM_PACE_PROFILE,
+  parseStartCommand,
   telegramTurnOrigin,
   telegramUserRef,
   type TelegramBotOptions,
@@ -32,11 +33,20 @@ export {
   TELEGRAM_DECORATION_CHANNEL,
   TelegramEmitter,
   conversationKeyOf,
-  failureNoticeText,
+  isEntityParseError,
   type EmissionRecord,
   type TelegramEmitterOptions,
 } from './telegramEmitter.js';
 
+export {
+  TelegramApiError,
+  classifyTurnFailure,
+  failureNoticeText,
+  type TurnFailureKind,
+} from './failureNotices.js';
+export { createTelegramChannelDirectory, type TelegramChannelDirectoryDeps } from './channelKeyDirectory.js';
+export { markdownToTelegramHtml } from './markdownToHtml.js';
+export { splitForTelegram, splitPlainText, TELEGRAM_MESSAGE_LIMIT } from './messageSplit.js';
 export { PendingReplyStore, pendingReplyKey } from './pendingReplies.js';
 export { OwnPosts } from './ownPosts.js';
 export { PersistentSpeakerHistoryStore } from './speakerHistory.js';
@@ -106,7 +116,9 @@ export {
   type TelegramReadinessLookup,
 } from './telegramReadiness.js';
 
+export { greetingText, groupActivatedText, pairedWelcomeText, type GroupActivationFacts } from './systemTexts.js';
 export {
+  FAIL_CLOSED_DM_POLICY,
   evaluateDmPolicy,
   parseDmPolicy,
   type DmPolicy,

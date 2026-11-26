@@ -58,7 +58,18 @@ import { registerBotCommands } from './botCommands.js';
 import { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 import type { ChannelRouteLookup } from './agentResolution.js';
 import { createTelegramConversationSend, createTelegramTargetedSend } from './telegramSend.js';
-import { TelegramApiClient } from './telegramBot.js';
+import { TELEGRAM_CHANNEL_TYPE, TelegramApiClient } from './telegramBot.js';
+import { createTelegramChannelDirectory } from './channelKeyDirectory.js';
+import type { ChannelKeyDirectory } from '@omadia/channel-sdk';
+
+/** Kernel service that aggregates every channel's `ChannelKeyDirectory` (#2001). */
+const CHANNEL_DIRECTORY_SERVICE = 'channelDirectoryRegistry';
+
+/** The registry surface used here; the kernel class is not importable from a plugin. */
+interface ChannelDirectoryRegistryLike {
+  register(directory: ChannelKeyDirectory): void;
+  unregister(channelType: string): void;
+}
 import { TelegramMembershipEvents } from './membershipEvents.js';
 import { createTelegramMeetingSource, createTelegramReadinessProvider } from './telegramReadiness.js';
 
@@ -123,17 +134,11 @@ export async function activate(
     );
   }
   const publicBaseUrl = ctx.config.get<string>('telegram_public_base_url');
-  // dmPolicy is the default-pairing safety knob (S+7.6).
-  //
-  // Fallback semantics: 'open' for backward-compat. Pre-S+7.6 installs
-  // have no dm_policy field in their registry config; reading absent →
-  // 'open' preserves the original behaviour ("anyone with the bot
-  // username can DM"). New installs after S+7.6 get an explicit
-  // dm_policy='pairing' written by bootstrapTelegramFromEnv on first
-  // boot, so this fallback only matters for legacy entries.
-  const dmPolicy: DmPolicy = parseDmPolicy(
-    ctx.config.get<string>('dm_policy'),
-    'open',
+  // dmPolicy is the default-pairing safety knob (S+7.6). A missing, blank or
+  // unknown value fails closed to 'pairing' (#1998): an install from before
+  // the field existed, or a typo, never opens the bot to everyone.
+  const dmPolicy: DmPolicy = parseDmPolicy(ctx.config.get<string>('dm_policy'), (raw) =>
+    core.log('warn', `telegram dm_policy "${raw}" is not open, pairing or disabled; using pairing`),
   );
   core.log('info', `telegram dm policy = ${dmPolicy}`);
 
@@ -394,8 +399,31 @@ export async function activate(
     );
   }
 
+  // byte5ai/omadia#2001 — list the routable keys on /operator/channels, so an
+  // agent can be bound to a Telegram chat from the UI. Optional: a kernel
+  // without the registry still routes, the page just shows no Telegram row.
+  const directoryRegistry = ctx.services.get<ChannelDirectoryRegistryLike>(CHANNEL_DIRECTORY_SERVICE);
+  let unregisterDirectory: (() => void) | undefined;
+  if (directoryRegistry && me.username) {
+    directoryRegistry.register(
+      createTelegramChannelDirectory({
+        channelType: TELEGRAM_CHANNEL_TYPE,
+        originPluginId: ctx.agentId,
+        botUsername: me.username,
+        pairingStore,
+        onError: (what, err) =>
+          core.log('warn', `telegram channel directory: reading ${what} failed: ${err instanceof Error ? err.message : String(err)}`),
+      }),
+    );
+    unregisterDirectory = () => directoryRegistry.unregister(TELEGRAM_CHANNEL_TYPE);
+    core.log('info', 'telegram contributed its channel keys to /operator/channels');
+  } else {
+    core.log('info', 'channelDirectoryRegistry@1 not published — Telegram keys are not listed on /operator/channels');
+  }
+
   return {
     close: async () => {
+      unregisterDirectory?.();
       for (const dispose of disposeWebhookRoutes) dispose();
       if (typeof disposeProactiveSend === 'function') disposeProactiveSend();
       await fleet.stopAll();

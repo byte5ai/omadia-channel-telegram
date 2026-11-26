@@ -56,7 +56,14 @@ import type { PairingStore } from './pairingStore.js';
 import type { GroupMemberTracker } from './groupMemberTracker.js';
 import type { PairingTokenRegistry } from './pairingTokens.js';
 import {
-  failureNoticeText,
+  fileOf,
+  unreadableNoticeText,
+  unreadableParts,
+  unreadableTurnNote,
+  type UnreadableFile,
+} from './inboundFiles.js';
+import { classifyTurnFailure, failureNoticeText, TelegramApiError } from './failureNotices.js';
+import {
   TelegramEmitter,
   type EmissionRecord,
   type SpeakerHistoryReader,
@@ -182,6 +189,13 @@ export interface TelegramMessage {
   left_chat_member?: TelegramUser;
   /** Set on a message that carries a native poll (the answer to `sendPoll`). */
   poll?: { id: string };
+  /** Content this channel does not read; each is reported to the person (#1999). */
+  voice?: { file_id: string; mime_type?: string };
+  audio?: { file_id: string; file_name?: string; mime_type?: string };
+  video?: { file_id: string; file_name?: string; mime_type?: string };
+  video_note?: { file_id: string };
+  animation?: { file_id: string; file_name?: string; mime_type?: string };
+  sticker?: { file_id: string };
 }
 
 export interface TelegramMessageEntity {
@@ -517,21 +531,25 @@ export class TelegramApiClient {
   }
 
   private async call<T>(method: string, params: unknown): Promise<T> {
-    const res = await fetch(`${this.base}/${method}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    const json = (await res.json()) as {
+    let res: Response;
+    try {
+      res = await fetch(`${this.base}/${method}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+    } catch (err) {
+      // Telegram not reached: still a delivery failure, never "the model".
+      throw new TelegramApiError(method, undefined, err instanceof Error ? err.message : String(err));
+    }
+    const json = (await res.json().catch(() => ({ ok: false, description: `HTTP ${String(res.status)}` }))) as {
       ok: boolean;
       result?: T;
       description?: string;
       error_code?: number;
     };
     if (!json.ok || json.result === undefined) {
-      throw new Error(
-        `Telegram API ${method} failed: ${json.description ?? 'unknown'} (code=${String(json.error_code)})`,
-      );
+      throw new TelegramApiError(method, json.error_code, json.description ?? 'unknown');
     }
     return json.result;
   }
@@ -619,8 +637,8 @@ export const TELEGRAM_PACE_PROFILE: ChannelPaceProfile = Object.freeze({
   typingIntervalMs: 4_000,
 });
 
-/** The notice for a message without text or a usable image. */
-const UNSUPPORTED_MESSAGE_TEXT = 'Ich kann derzeit nur Text-Nachrichten und Bilder verarbeiten.';
+/** Anthropic's per-image cap; larger images are not sent to the model. */
+const MAX_INBOUND_IMAGE_BYTES = 5 * 1024 * 1024;
 
 /** At most this many groups are remembered as "the bot read an unaddressed message here". */
 const MAX_UNADDRESSED_CHATS = 1_000;
@@ -824,7 +842,21 @@ export class TelegramBot {
     // captures the activation. Telegram delivers DMs to user IDs even
     // without a prior /start, since the user has chatted with the bot
     // before (via the pairing flow).
-    const notice = groupActivatedText(this.systemName, activation.chatTitle, systemLocaleOf(upd.from.language_code));
+    // With privacy mode on (the BotFather default) and no admin rights the
+    // bot never receives an @-mention, only replies and /cmd@bot (#1997).
+    const readsAllMessages =
+      upd.new_chat_member.status === 'administrator' || (await this.privacyModeIsOff());
+    if (!readsAllMessages) {
+      console.warn(
+        `[telegram] group activated chat=${String(upd.chat.id)} with privacy mode on and no admin rights: @-mentions will not reach the bot`,
+      );
+    }
+    const notice = groupActivatedText(
+      this.systemName,
+      activation.chatTitle,
+      systemLocaleOf(upd.from.language_code),
+      { botUsername: this.botIdentity.username, readsAllMessages },
+    );
     try {
       await this.emitter.sendSystem(upd.from.id, notice);
     } catch (err) {
@@ -841,6 +873,16 @@ export class TelegramBot {
           `[telegram] group notice in chat=${String(upd.chat.id)} failed too: ${groupErr instanceof Error ? groupErr.message : String(groupErr)}`,
         );
       }
+    }
+  }
+
+  /** Whether BotFather privacy mode is off for this bot; false when it cannot be read. */
+  private async privacyModeIsOff(): Promise<boolean> {
+    try {
+      return (await this.api.getMe()).can_read_all_group_messages === true;
+    } catch (err) {
+      console.warn(`[telegram] getMe failed, privacy mode unknown: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
     }
   }
 
@@ -931,24 +973,25 @@ export class TelegramBot {
     // waits until every gate passed: a group message that is not for the bot
     // (privacy off, facilitation) is never fetched.
     const hasImage = hasInboundImage(message);
+    // Files the channel does not read (PDF, voice, stickers, ...): reported to
+    // the person after the access gates, never silently dropped (#1999).
+    const unreadable = unreadableParts(message);
 
     const rawText = message.text?.trim() ?? message.caption?.trim() ?? '';
-    if (!rawText && !hasImage) {
-      // Truly empty: stickers, voice, video without caption — out of scope.
-      // In a group only when the bot is addressed in an activated group: with
-      // privacy mode off (facilitation) every sticker would draw this notice.
-      if (message.chat.type === 'group' || message.chat.type === 'supergroup') {
-        const isAddressed = this.isBotAddressedInGroup(message);
-        if (!isAddressed || !(await this.pairingStore.getGroupActivation(message.chat.id))) return;
-      }
-      await this.emitter.sendSystem(message.chat.id, UNSUPPORTED_MESSAGE_TEXT);
+    if (!rawText && !hasImage && unreadable.length === 0) {
+      // A service message (pinned message, new title, ...): nothing a person
+      // said, so nothing to answer and no notice, in any chat (#1996).
+      console.log(
+        `[telegram] message without content ignored chat=${String(message.chat.id)} type=${message.chat.type}`,
+      );
       return;
     }
+    const hasContent = rawText.length > 0 || hasImage;
     // For images without caption, give the orchestrator a generic
     // "describe this" prompt so vision-flow doesnt choke on empty text.
     const text = rawText.length > 0
       ? rawText
-      : 'Was siehst du auf diesem Bild?';
+      : hasImage ? 'Was siehst du auf diesem Bild?' : '';
 
     // /start <token> → pairing branch (S+7.6). Telegram clients send this
     // exact prefix when the user clicks a `https://t.me/<bot>?start=<token>`
@@ -960,11 +1003,12 @@ export class TelegramBot {
     // The pairing branch runs BEFORE the dmPolicy guard so pairing remains
     // self-bootstrapping (otherwise the first DM from a fresh user would
     // be refused before they could even bind).
-    if (text.startsWith('/start ') && message.chat.type === 'private') {
+    const start = parseStartCommand(text, this.botIdentity.username);
+    if (start && message.chat.type === 'private') {
       await this.handleStartWithToken({
         chat: message.chat,
         from: message.from,
-        token: text.slice('/start '.length).trim(),
+        token: start.token,
       });
       return;
     }
@@ -1019,7 +1063,9 @@ export class TelegramBot {
       this.noteUnaddressed(message, isAddressed);
       // The record for a facilitation the kernel subscribed to comes before the
       // mention gate: it concerns messages that need not mention the bot.
-      if (await this.handleInboundForEngine(message, isAddressed)) return;
+      // Only what a person said or showed is recorded: a lone sticker or
+      // voice message carries nothing the engine could read.
+      if (hasContent && (await this.handleInboundForEngine(message, isAddressed))) return;
       if (!isAddressed) {
         console.log(
           `[telegram] group message ignored chat=${String(message.chat.id)} — not addressed (no @-mention, no reply, no /cmd@bot)`,
@@ -1035,23 +1081,45 @@ export class TelegramBot {
           ? message.entities
           : message.caption_entities;
       userMessage = this.stripBotMention(text, stripEntities);
-    } else if (await this.handleInboundForEngine(message, true)) {
+      // `/start@<bot>` in a group is the greeting too, never a turn (#2004).
+      if (parseStartCommand(text, this.botIdentity.username)) {
+        await this.emitter.sendSystem(
+          message.chat.id,
+          greetingText(this.systemName, systemLocaleOf(message.from?.language_code)),
+        );
+        return;
+      }
+    } else if (hasContent && (await this.handleInboundForEngine(message, true))) {
       return;
     }
 
     // A typed number or label answers the question the agent just asked
     // (plain-text parity for choice cards, spec §5.14).
-    userMessage = this.pendingReplies.resolve(
-      pendingReplyKey(message.chat.id, message.from?.id),
-      userMessage,
-    );
-
-    const inboundImages = hasImage ? await this.collectInboundImages(message) : [];
-    if (!rawText && inboundImages.length === 0) {
-      // Every image failed to download: nothing to answer.
-      await this.emitter.sendSystem(message.chat.id, UNSUPPORTED_MESSAGE_TEXT);
-      return;
+    // A lone sticker or voice message answers no pending question.
+    if (hasContent) {
+      userMessage = this.pendingReplies.resolve(
+        pendingReplyKey(message.chat.id, message.from?.id),
+        userMessage,
+      );
     }
+
+    const inbound = hasImage ? await this.collectInboundImages(message) : { images: [], dropped: [] };
+    const notRead = [...unreadable, ...inbound.dropped];
+    if (notRead.length > 0) {
+      console.log(
+        `[telegram] attachments not read chat=${String(message.chat.id)}: ${notRead.map((f) => `${f.kind}/${f.reason}${f.mimeType ? `/${f.mimeType}` : ''}`).join(', ')}`,
+      );
+      await this.emitter.sendSystem(
+        message.chat.id,
+        unreadableNoticeText(notRead, systemLocaleOf(message.from?.language_code)),
+      );
+    }
+    // Nothing the agent could answer: no text and no image that was read.
+    if (!rawText && inbound.images.length === 0) return;
+    if (notRead.length > 0) {
+      userMessage = `${userMessage}\n\n${unreadableTurnNote(notRead)}`;
+    }
+    const inboundImages = inbound.images;
 
     await this.runTurn({
       chat: message.chat,
@@ -1137,24 +1205,9 @@ export class TelegramBot {
    */
   private async collectInboundImages(
     message: TelegramMessage,
-  ): Promise<
-    Array<{
-      kind: 'image';
-      url: string;
-      mediaType: string;
-      name?: string;
-      sizeBytes: number;
-      bytesBase64: string;
-    }>
-  > {
-    const out: Array<{
-      kind: 'image';
-      url: string;
-      mediaType: string;
-      name?: string;
-      sizeBytes: number;
-      bytesBase64: string;
-    }> = [];
+  ): Promise<{ images: InboundImage[]; dropped: UnreadableFile[] }> {
+    const images: InboundImage[] = [];
+    const dropped: UnreadableFile[] = [];
 
     // Photo: try variants from largest to smallest, take FIRST one that
     // fits the 5MB Anthropic cap. Telegram photo[] is sorted ascending
@@ -1167,19 +1220,21 @@ export class TelegramBot {
       console.log(
         `[telegram] inbound photo detected chat=${String(message.chat.id)} variants=${String(message.photo.length)}`,
       );
+      let reason: UnreadableFile['reason'] = 'download_failed';
       for (let i = message.photo.length - 1; i >= 0; i--) {
         const variant = message.photo[i];
         if (!variant) continue;
         const dl = await this.tryDownloadImage(variant.file_id);
         if (!dl) continue;
-        if (dl.sizeBytes > 5 * 1024 * 1024) {
+        if (dl.sizeBytes > MAX_INBOUND_IMAGE_BYTES) {
+          reason = 'too_large';
           console.warn(
             `[telegram] photo variant idx=${String(i)} too large (${String(dl.sizeBytes)} bytes > 5MB) — trying smaller`,
           );
           continue;
         }
         const mediaType = normaliseAnthropicMediaType(dl.mediaType, 'image/jpeg');
-        out.push({
+        images.push({
           kind: 'image',
           url: `tg://file/${variant.file_id}`,
           mediaType,
@@ -1191,48 +1246,47 @@ export class TelegramBot {
         );
         break;
       }
+      if (images.length === 0) dropped.push({ kind: 'image', reason });
     }
     // Document with image MIME — single candidate, take or reject. Unlike
     // photo[], document mime can be any of HEIC / TIFF / BMP / SVG /
     // image/anything — Anthropic only takes 4 (jpeg, png, gif, webp), so
-    // filter strictly here. HEIC + others are dropped with a clear log.
-    if (
-      message.document &&
-      message.document.mime_type &&
-      message.document.mime_type.startsWith('image/')
-    ) {
+    // filter strictly here. HEIC + others are reported to the person.
+    const document = message.document;
+    if (document?.mime_type?.startsWith('image/') && !message.animation) {
+      const declaredMime = document.mime_type;
       console.log(
-        `[telegram] inbound image-document detected chat=${String(message.chat.id)} mime=${message.document.mime_type}`,
+        `[telegram] inbound image-document detected chat=${String(message.chat.id)} mime=${declaredMime}`,
       );
-      const declaredMime = message.document.mime_type;
+      const refuse = (reason: UnreadableFile['reason']): void => {
+        dropped.push(fileOf(document, 'image', reason));
+      };
       const acceptableMime = normaliseAnthropicMediaType(declaredMime, undefined);
       if (!acceptableMime) {
         console.warn(
-          `[telegram] image-document mime ${declaredMime} not accepted by Anthropic (only jpeg/png/gif/webp) — skipping. Resend the image as Telegram-photo instead of file/document.`,
+          `[telegram] image-document mime ${declaredMime} not accepted by Anthropic (only jpeg/png/gif/webp) — skipping`,
         );
+        refuse('image_format');
+        return { images, dropped };
+      }
+      const dl = await this.tryDownloadImage(document.file_id);
+      if (!dl) {
+        refuse('download_failed');
+      } else if (dl.sizeBytes > MAX_INBOUND_IMAGE_BYTES) {
+        console.warn(`[telegram] image-document too large (${String(dl.sizeBytes)} bytes > 5MB) — skipping`);
+        refuse('too_large');
       } else {
-        const dl = await this.tryDownloadImage(message.document.file_id);
-        if (dl) {
-          if (dl.sizeBytes > 5 * 1024 * 1024) {
-            console.warn(
-              `[telegram] image-document too large (${String(dl.sizeBytes)} bytes > 5MB) — skipping`,
-            );
-          } else {
-            out.push({
-              kind: 'image',
-              url: `tg://file/${message.document.file_id}`,
-              mediaType: acceptableMime,
-              ...(message.document.file_name
-                ? { name: message.document.file_name }
-                : {}),
-              sizeBytes: dl.sizeBytes,
-              bytesBase64: dl.bytes.toString('base64'),
-            });
-          }
-        }
+        images.push({
+          kind: 'image',
+          url: `tg://file/${document.file_id}`,
+          mediaType: acceptableMime,
+          ...(document.file_name ? { name: document.file_name } : {}),
+          sizeBytes: dl.sizeBytes,
+          bytesBase64: dl.bytes.toString('base64'),
+        });
       }
     }
-    return out;
+    return { images, dropped };
   }
 
   /** Wrapped downloadFile that returns undefined on error (warn-logged). */
@@ -1357,10 +1411,18 @@ export class TelegramBot {
       return;
     }
     if (input.token.length === 0) {
-      // Bare /start with no token = first-time-greeting flow, not pairing.
+      // Bare /start (the START button) = the greeting, never a turn (#2004).
+      // Under `disabled` the bot stays silent in DMs; an unpaired person under
+      // `pairing` is told how to get paired.
+      if (this.dmPolicy === 'disabled') {
+        console.log(`[telegram] bare /start ignored chat=${String(input.chat.id)} policy=disabled`);
+        return;
+      }
+      const isPaired =
+        this.dmPolicy !== 'pairing' || (await this.pairingStore.getDmBinding(input.from.id)) !== undefined;
       await this.emitter.sendSystem(
         input.chat.id,
-        greetingText(this.systemName, systemLocaleOf(input.from.language_code)),
+        greetingText(this.systemName, systemLocaleOf(input.from.language_code), { needsPairing: !isPaired }),
       );
       return;
     }
@@ -1604,7 +1666,7 @@ export class TelegramBot {
           // agent's, nor under no name. The person gets a system notice that
           // something went wrong; the missing speaker is logged.
           console.error(`[telegram] answer without a speaker withheld (chat=${String(input.chat.id)})`);
-          await this.emitter.sendSystem(input.chat.id, failureNoticeText('die Antwort konnte keinem Sprecher zugeordnet werden'));
+          await this.emitter.sendSystem(input.chat.id, failureNoticeText('generic', locale));
           return;
         }
         await this.emitter.sendAnswer(input.chat.id, result);
@@ -1635,9 +1697,17 @@ export class TelegramBot {
           `[telegram] turn done (attach=${String(attachmentCount)}, history=${String(priorTurns.length + 1)}, chat=${String(input.chat.id)}, user=${userId ?? 'anon'})`,
         );
       } catch (err) {
-        console.error('[telegram] orchestrator failure:', err);
-        const detail = err instanceof Error ? err.message : String(err);
-        await this.emitter.sendSystem(input.chat.id, failureNoticeText(detail));
+        // The full error stays in the log; the person gets a fixed notice
+        // for its kind (#2000).
+        const kind = classifyTurnFailure(err);
+        console.error(`[telegram] turn failed (kind=${kind}, chat=${String(input.chat.id)}):`, err);
+        try {
+          await this.emitter.sendSystem(input.chat.id, failureNoticeText(kind, locale));
+        } catch (noticeErr) {
+          console.error(
+            `[telegram] failure notice could not be sent (chat=${String(input.chat.id)}): ${noticeErr instanceof Error ? noticeErr.message : String(noticeErr)}`,
+          );
+        }
       }
     };
 
@@ -1702,9 +1772,37 @@ function telegramDisplayName(user: {
   return user.username ? `@${user.username}` : 'Telegram User';
 }
 
+/**
+ * `/start`, `/start <token>`, `/start@<bot>` and `/start@<bot> <token>`
+ * (#2004). A `/start@<other bot>` is not ours. Returns the token, empty for a
+ * bare `/start`; undefined when the text is no start command.
+ */
+export function parseStartCommand(
+  text: string,
+  botUsername: string | undefined,
+): { readonly token: string } | undefined {
+  const match = /^\/start(?:@([A-Za-z0-9_]+))?(?:\s+(.*))?$/s.exec(text.trim());
+  if (!match) return undefined;
+  const addressee = match[1];
+  if (addressee && botUsername && addressee.toLowerCase() !== botUsername.toLowerCase()) return undefined;
+  return { token: (match[2] ?? '').trim() };
+}
+
+/** An image read from Telegram, ready for the turn. */
+interface InboundImage {
+  kind: 'image';
+  url: string;
+  mediaType: string;
+  name?: string;
+  sizeBytes: number;
+  bytesBase64: string;
+}
+
 /** A photo, or a document with an image MIME type: what `collectInboundImages` may fetch. */
 function hasInboundImage(message: TelegramMessage): boolean {
-  return (message.photo?.length ?? 0) > 0 || message.document?.mime_type?.startsWith('image/') === true;
+  if ((message.photo?.length ?? 0) > 0) return true;
+  // An animation's `document` is its video, not an image.
+  return !message.animation && message.document?.mime_type?.startsWith('image/') === true;
 }
 
 /** In the chat: creator, administrator, member, or restricted but still a member. */

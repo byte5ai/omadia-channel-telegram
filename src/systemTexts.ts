@@ -25,25 +25,41 @@ export function systemLocaleOf(languageCode: string | undefined): SystemLocale {
   return /^en\b/i.test(languageCode ?? '') ? 'en' : 'de';
 }
 
+/**
+ * The welcome after a pairing. The pairing allows this Telegram account to
+ * chat with the bot; it does not link it to an omadia user (that needs the
+ * kernel link of omadia ADR-0225, byte5ai/omadia#1995), so the text says
+ * "allowed", never "connected as". The operator's label is named as the
+ * pairing's label only.
+ */
 export function pairedWelcomeText(name: string, identityLabel: string, locale: SystemLocale): string {
   return locale === 'en'
     ? [
         `Welcome to the ${name} system!`,
         '',
-        `You are connected as ${identityLabel}.`,
+        `Your Telegram account may now chat with me (pairing "${identityLabel}").`,
         '',
         'Just ask me a question, I answer directly.',
       ].join('\n')
     : [
         `Willkommen zum ${name} System!`,
         '',
-        `Du bist verbunden als ${identityLabel}.`,
+        `Dein Telegram-Konto ist jetzt freigeschaltet (Pairing „${identityLabel}“).`,
         '',
         'Stell mir einfach eine Frage, ich antworte direkt.',
       ].join('\n');
 }
 
-export function greetingText(name: string, locale: SystemLocale): string {
+export function greetingText(
+  name: string,
+  locale: SystemLocale,
+  options: { readonly needsPairing?: boolean } = {},
+): string {
+  if (options.needsPairing) {
+    return locale === 'en'
+      ? `Welcome to the ${name} system! Before you can ask me anything, your account has to be paired: ask the operator for a pairing link and open it here.`
+      : `Willkommen zum ${name} System! Bevor du mir Fragen stellen kannst, muss dein Konto gekoppelt werden: Bitte frag den Operator nach einem Pairing-Link und öffne ihn hier.`;
+  }
   return locale === 'en'
     ? `Welcome to the ${name} system! You can ask me about your data.`
     : `Willkommen zum ${name} System! Du kannst mich Sachen über deine Daten fragen.`;
@@ -55,8 +71,40 @@ export function notPairedText(name: string, locale: SystemLocale): string {
     : `Du bist noch nicht mit dem ${name} System verbunden. Bitte frag den Operator nach einem Pairing-Link.`;
 }
 
-export function groupActivatedText(name: string, chatTitle: string, locale: SystemLocale): string {
-  return locale === 'en'
-    ? `Group activated: the ${name} system is now enabled in the group "${chatTitle}". Write to me there (with an @-mention while privacy mode is on).`
-    : `Gruppe aktiviert: Das ${name} System ist jetzt in der Gruppe „${chatTitle}“ freigeschaltet. Schreib mich dort einfach an (mit @-Mention, solange der Privacy-Mode aktiv ist).`;
+export interface GroupActivationFacts {
+  /** The bot's username, for the `@<bot>` and `/cmd@<bot>` forms. */
+  readonly botUsername: string;
+  /**
+   * The bot receives every group message: BotFather privacy mode is off, or
+   * it is an administrator of the group. Otherwise an @-mention never reaches
+   * it (byte5ai/omadia#1997).
+   */
+  readonly readsAllMessages: boolean;
+}
+
+export function groupActivatedText(
+  name: string,
+  chatTitle: string,
+  locale: SystemLocale,
+  facts: GroupActivationFacts,
+): string {
+  const bot = `@${facts.botUsername}`;
+  if (locale === 'en') {
+    const head = `Group activated: the ${name} system is now enabled in the group "${chatTitle}".`;
+    return facts.readsAllMessages
+      ? `${head} Mention me there with ${bot}, reply to one of my messages, or use a command like /agent${bot}.`
+      : [
+          `${head} In the group, reply to one of my messages or use a command like /agent${bot}.`,
+          '',
+          `Privacy mode is on for this bot, so an @-mention (${bot}) does not reach me. To use @-mentions: in @BotFather send /setprivacy, choose this bot, select Disable, then remove the bot from the group and add it again. Making the bot an admin of the group works too.`,
+        ].join('\n');
+  }
+  const head = `Gruppe aktiviert: Das ${name} System ist jetzt in der Gruppe „${chatTitle}“ freigeschaltet.`;
+  return facts.readsAllMessages
+    ? `${head} Erwähne mich dort mit ${bot}, antworte auf eine meiner Nachrichten oder nutze einen Befehl wie /agent${bot}.`
+    : [
+        `${head} Antworte dort auf eine meiner Nachrichten oder nutze einen Befehl wie /agent${bot}.`,
+        '',
+        `Für diesen Bot ist der Privacy-Mode aktiv, deshalb erreicht mich eine @-Erwähnung (${bot}) nicht. Für @-Erwähnungen: in @BotFather /setprivacy senden, den Bot wählen, Disable wählen, dann den Bot aus der Gruppe entfernen und neu hinzufügen. Alternativ den Bot zum Admin der Gruppe machen.`,
+      ].join('\n');
 }

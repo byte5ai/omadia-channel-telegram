@@ -56,8 +56,12 @@ setup:
       2. Send `/newbot` → pick a display name → a unique username ending in `bot`.
       3. BotFather replies with the **HTTP API token** (`123456:ABC-…`). You paste
          this as the **bot token** secret during install.
-      4. Optional: `/setprivacy` → **Disable** so the bot can read all group
-         messages (otherwise only commands and @mentions).
+      4. For groups: `/setprivacy` → choose the bot → **Disable**, then add the
+         bot to the group (or remove and re-add it; the setting applies only
+         to groups the bot joins afterwards). With privacy mode on (the
+         default) the bot receives only replies to its own messages and
+         commands like `/agent@<bot>`: an @-mention never reaches it. Making
+         the bot an admin of the group has the same effect as disabling it.
 
       ### 2. Public URL vs. long-polling
       - **Public HTTPS host**: set **Public HTTPS Base-URL** to the origin of
@@ -84,8 +88,13 @@ setup:
       2. Sende `/newbot` → Anzeige-Name → eindeutigen Username (endet auf `bot`).
       3. BotFather antwortet mit dem **HTTP API Token** (`123456:ABC-…`). Den
          trägst du bei der Installation als **Bot-Token**-Secret ein.
-      4. Optional: `/setprivacy` → **Disable**, damit der Bot in Gruppen alle
-         Nachrichten liest (sonst nur Befehle und @Erwähnungen).
+      4. Für Gruppen: `/setprivacy` → Bot wählen → **Disable**, danach den Bot
+         in die Gruppe aufnehmen (oder entfernen und neu aufnehmen; die
+         Einstellung gilt nur für Gruppen, denen der Bot danach beitritt). Mit
+         aktivem Privacy-Mode (Standard) erhält der Bot nur Antworten auf
+         seine eigenen Nachrichten und Befehle wie `/agent@<bot>`: eine
+         @-Erwähnung erreicht ihn nie. Den Bot zum Admin der Gruppe zu machen
+         wirkt wie das Abschalten.
 
       ### 2. Public-URL vs. Long-Polling
       - **Öffentlicher HTTPS-Host**: **Public HTTPS Base-URL** auf die Origin
@@ -114,11 +123,15 @@ setup:
       help: "Vollständige HTTPS-Origin, auf der die Middleware öffentlich erreichbar ist (z.B. `https://bot.example.com`), nicht die der Web-UI. Der Webhook braucht außerdem die Freigabe der öffentlichen Pfade `/api/telegram/webhook` und `/api/telegram/agent-bots` auf der Plugin-Seite. Telegram registriert den Webhook unter `<base>/api/telegram/webhook` mit dem konfigurierten Secret-Token. Leer lassen → Plugin nutzt Long-Polling (getUpdates) als Fallback — gut für lokale dev ohne ngrok/cloudflared."
       required: false
     - key: "dm_policy"
-      type: "string"
+      type: "enum"
       label: "DM-Auth-Policy"
-      help: "Wer darf den Bot per Direct-Message anschreiben? `pairing` (default ab S+7.6, safer): Nutzer müssen erst via QR-Deeplink-Flow gekoppelt werden, ungebundene DMs bekommen 'Bitte erst koppeln'-Reply. `open`: jeder mit dem Bot-Username darf chatten (Verhalten vor S+7.6). `disabled`: keine DMs zugelassen, Bot ignoriert silent. Group-Auth ist davon unabhängig (Auto-Allowlist beim Bot-Add durch gepairten Operator via `my_chat_member`-Event)."
+      help: "Wer darf den Bot per Direct-Message anschreiben? `pairing` (Standard): Nutzer werden erst über einen Pairing-Link gekoppelt; ungekoppelte DMs bekommen einen Hinweis. `open`: jeder mit dem Bot-Username darf chatten. `disabled`: keine DMs, der Bot schweigt. Ein fehlender oder unbekannter Wert gilt als `pairing`. Gruppen werden davon unabhängig freigeschaltet, wenn ein gekoppelter Nutzer den Bot hinzufügt."
       required: false
       default: "pairing"
+      enum:
+        - { value: "pairing", label: "Pairing (nur gekoppelte Nutzer)" }
+        - { value: "open", label: "Offen (jeder mit dem Username)" }
+        - { value: "disabled", label: "Keine Direktnachrichten" }
     - key: "system_name"
       type: "string"
       label: "Name des Systems"
@@ -226,6 +239,9 @@ integrations:
 #                           (`middleware/src/index.ts`), not by a plugin.
 #                           activate() throws when absent, but a `requires:`
 #                           entry could never resolve.
+#   - `channelDirectoryRegistry@1` — kernel-side; lists the bot, activated
+#                           groups and paired DMs on /operator/channels
+#                           (#2001). Absent: routing works, no listing.
 #   - `channelResolver@1` — per-turn Agent routing; also kernel-side, and
 #                           absence is survivable (a host without the registry
 #                           routes to the default chatAgent; with the registry
@@ -238,6 +254,7 @@ requires:
   - "chatAgent@^1"
   - "memoryStore@^1"
 optional_requires:
+  - "channelDirectoryRegistry@1"
   - "channelResolver@1"
   - "routinesIntegration@1"
   - "turnContext@1"

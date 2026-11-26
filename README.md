@@ -31,7 +31,7 @@ relationship to other integrations.
 | Pace | Typing indicator, one acknowledgement for long work under the agent's name (SDK `runPacedTurn`) |
 | Agent posts | Conversation and targeted send providers (`telegramSend.ts`); the kernel posts cards (and polls in DMs) as text and matches typed answers, the plugin supplies message ids and `created` events (`conversationMessages.ts`); group polls go out as native Telegram polls (`telegramPolls.ts`) |
 | Facilitation | Readiness per bot and group, the group's capability snapshot (`telegramReadiness.ts`), join/leave events (`membershipEvents.ts`) |
-| Pairing | Token-based account pairing (`pairingStore.ts`, `pairingTokens.ts`) |
+| Pairing | Token-based DM allow-list: a pairing link lets one Telegram account chat with the bot (`pairingStore.ts`, `pairingTokens.ts`). It does not link the account to an omadia user; that needs the kernel link of omadia ADR-0225 (byte5ai/omadia#1995). Turns run as the Telegram user. |
 | DM policy | `dmPolicyGuard.ts` |
 | Admin UI | `adminRouter.ts` + static assets under `ui/`, copied into `dist/` at build time |
 | Delegation | Every user turn delegated to the shared agent runtime (Conductor) |
@@ -223,7 +223,8 @@ plugin has no card code. What it provides for that:
   in a conversation the kernel answers `all` for; everywhere else the usual
   mention rules stay. Edits and deletions are not recorded (Telegram does not
   report them to this plugin). With BotFather privacy mode on the bot only
-  sees mentions, commands and replies; see "Native facilitators" below.
+  sees commands (`/cmd@<bot>`) and replies to its own messages, never an
+  @-mention; see "Native facilitators" below.
 - Every bot's own-identity key is `tg:<botId>` (the installation's bot and
   each agent's bot). A send names the bot it goes out as; a key no bot of
   this installation has is refused, nothing is posted under a different name.
@@ -253,7 +254,7 @@ the agent's page, `tg:<botId>`). What the plugin gives the kernel for that:
 
 | Requirement | Telegram | Closest behaviour |
 |---|---|---|
-| Every group message reaches the facilitator | With privacy mode **on** (BotFather default) a bot gets only mentions, commands, replies to it and service messages | Make the facilitator's bot an **administrator** of the group (admins get every message), or `/setprivacy` → Disable in @BotFather and then **remove and re-add** the bot (the setting applies from the next join). Readiness says `consent_missing` until one of the two holds; privacy off without admin rights is reported `ready` with `verified: false`, because the Bot API cannot tell whether the bot was re-added, until the bot has read a message in the group that did not address it (process-local proof, gone after a restart or when the bot's membership in the group changes) |
+| Every group message reaches the facilitator | With privacy mode **on** (BotFather default) a bot gets only commands, replies to it and service messages (no @-mentions) | Make the facilitator's bot an **administrator** of the group (admins get every message), or `/setprivacy` → Disable in @BotFather and then **remove and re-add** the bot (the setting applies from the next join). Readiness says `consent_missing` until one of the two holds; privacy off without admin rights is reported `ready` with `verified: false`, because the Bot API cannot tell whether the bot was re-added, until the bot has read a message in the group that did not address it (process-local proof, gone after a restart or when the bot's membership in the group changes) |
 | Several agent bots in one group with privacy off | Every bot sees every bare `/command` | Use `/command@Bot` (see `/agent` above) |
 | Approval votes as polls | Telegram polls are single or multiple choice; only a kernel with `SendPoll.multipleAnswers` (plugin-api 1.84.0, omadia#2155) says which | With the flag: a multiple-answer poll. **On an older kernel every poll is single choice, so in an approval vote one tap replaces a written multi-option ballot**; there is no robust signal in the poll itself (the hint text is not one), so write several approvals instead of tapping |
 | Ranked and other votes as polls | Telegram has no ranked poll | The facilitator posts no poll for them; the ballot is written in the chat |

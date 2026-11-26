@@ -68,10 +68,16 @@ describe('criterion 5 — one emitter, every message attributed', () => {
       },
     });
     await failing.bot.handleUpdate(privateText('hi', 7));
-    // 6. a message type we cannot read
+    // 6. a message type we cannot read (a sticker)
     await failing.bot.handleUpdate({
       update_id: 900,
-      message: { message_id: 1, from: { id: 7, is_bot: false, first_name: 'U' }, chat: { id: 7, type: 'private' }, date: 0 },
+      message: {
+        message_id: 1,
+        from: { id: 7, is_bot: false, first_name: 'U' },
+        chat: { id: 7, type: 'private' },
+        date: 0,
+        sticker: { file_id: 'st' },
+      },
     });
     // 7. bare /start greeting
     await failing.bot.handleUpdate(privateText('/start ', 7));

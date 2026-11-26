@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>byte5 Harness · Telegram Admin</title>
+    <title>omadia · Telegram Admin</title>
     <style>
       :root {
         --bg: #0e1116;
@@ -508,18 +508,18 @@
           el(
             "p",
             { class: "sub" },
-            "Operator-Login für den byte5 Harness Telegram-Channel.",
+            "Operator-Login für den omadia Telegram-Channel.",
           ),
-          el("label", { for: "token" }, "telegram_admin_token"),
+          el("label", { for: "token" }, "Admin-Token"),
           input,
           errBox,
           btn,
           el(
             "div",
             { class: "hint" },
-            "Token wird beim ersten Boot der Middleware geloggt (Suche nach ",
-            el("code", {}, "telegram_admin_token"),
-            "). Alternativ via Vault-Inspection lesbar.",
+            "Das Token steht nie im Log. Setz es in den Einstellungen des Telegram-Plugins im Feld ",
+            el("code", {}, "Admin-Token"),
+            " (dort auch rotierbar) und gib denselben Wert hier ein.",
           ),
         );
         root.appendChild(el("div", { class: "login-screen" }, card));
@@ -636,7 +636,7 @@
             el(
               "div",
               {},
-              el("label", { for: "id" }, "Harness Identity ID"),
+              el("label", { for: "id" }, "Kennung (frei, z.B. E-Mail; noch keine Verknüpfung mit einem omadia-Konto)"),
               idInput,
             ),
             el(
@@ -728,7 +728,7 @@
               el(
                 "div",
                 { style: "font-size:12px;color:var(--ink-soft);margin-top:4px;" },
-                'User scannt den QR mit Telegram, klickt „Start“, ist verbunden.',
+                'User scannt den QR mit Telegram, klickt „Start“ und darf dem Bot danach schreiben.',
               ),
               el("div", { class: "deeplink" }, issued.deeplink),
               copyBtn,
@@ -767,8 +767,8 @@
                 "tr",
                 {},
                 el("th", {}, "Telegram User"),
-                el("th", {}, "Harness Identity"),
-                el("th", {}, "Verbunden seit"),
+                el("th", {}, "Kennung"),
+                el("th", {}, "Freigeschaltet seit"),
                 el("th", {}, ""),
               ),
             ),
@@ -873,7 +873,7 @@
                   {
                     class: "btn-danger",
                     onclick: async () => {
-                      if (!confirm(`Binding für ${b.harnessIdentityLabel} entfernen?`)) return;
+                      if (!confirm(`Freischaltung für ${b.harnessIdentityLabel} entfernen?`)) return;
                       try {
                         await apiClient.revokeDm(b.telegramUserId);
                         showToast("Binding entfernt.", "ok");

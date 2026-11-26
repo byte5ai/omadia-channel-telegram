@@ -16,7 +16,10 @@ export type MemoryStoreLike = ConstructorParameters<typeof PairingStore>[0];
 
 export function memoryStore(files: Map<string, string> = new Map()): MemoryStoreLike {
   return {
-    list: async () => [],
+    list: async (dir: string) =>
+      [...files.keys()]
+        .filter((p) => p.startsWith(`${dir}/`) && !p.slice(dir.length + 1).includes('/'))
+        .map((p) => ({ virtualPath: p, isDirectory: false })) as never,
     fileExists: async (p: string) => files.has(p),
     directoryExists: async () => true,
     readFile: async (p: string) => files.get(p) ?? '',
