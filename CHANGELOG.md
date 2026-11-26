@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Declares its memory tree.** The manifest declares `permissions.memory.trees: ["pairings"]` (omadia ADR-0256, byte5ai/omadia#2232). On a kernel with ADR-0256, a plugin's `memoryStore@1` changes only the top-level trees it declares and owns, so no other plugin can read or rewrite `/memories/pairings/*`. Older kernels ignore the field, and ADR-0256's kernel keeps `pairings` for this plugin through a dated legacy row until this release is installed, so install order does not matter.
 - **The agent's files arrive** (byte5ai/omadia#1993).
   - **The problem.** The channel sent every attachment by URL. Telegram cannot fetch a `localhost` URL, and with `sendDocument` it fetches only GIF, PDF and ZIP. So Excel and Word files never arrived, and with the default base URL no diagram did either. The answer still said "here is your file".
   - **How files are sent now.** On a kernel with the attachment read seam (`CoreApi.readAttachment`, channel-sdk 0.3.16, omadia ADR-0222, byte5ai/omadia#2257), a file the kernel serves is read as bytes and uploaded as multipart. JPEG, PNG and WebP up to 10 MB are sent as a photo, everything else as a document. A URL that is not the kernel's is still sent by URL.
