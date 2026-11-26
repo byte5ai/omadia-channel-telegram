@@ -842,7 +842,21 @@ export class TelegramBot {
     // captures the activation. Telegram delivers DMs to user IDs even
     // without a prior /start, since the user has chatted with the bot
     // before (via the pairing flow).
-    const notice = groupActivatedText(this.systemName, activation.chatTitle, systemLocaleOf(upd.from.language_code));
+    // With privacy mode on (the BotFather default) and no admin rights the
+    // bot never receives an @-mention, only replies and /cmd@bot (#1997).
+    const readsAllMessages =
+      upd.new_chat_member.status === 'administrator' || (await this.privacyModeIsOff());
+    if (!readsAllMessages) {
+      console.warn(
+        `[telegram] group activated chat=${String(upd.chat.id)} with privacy mode on and no admin rights: @-mentions will not reach the bot`,
+      );
+    }
+    const notice = groupActivatedText(
+      this.systemName,
+      activation.chatTitle,
+      systemLocaleOf(upd.from.language_code),
+      { botUsername: this.botIdentity.username, readsAllMessages },
+    );
     try {
       await this.emitter.sendSystem(upd.from.id, notice);
     } catch (err) {
@@ -859,6 +873,16 @@ export class TelegramBot {
           `[telegram] group notice in chat=${String(upd.chat.id)} failed too: ${groupErr instanceof Error ? groupErr.message : String(groupErr)}`,
         );
       }
+    }
+  }
+
+  /** Whether BotFather privacy mode is off for this bot; false when it cannot be read. */
+  private async privacyModeIsOff(): Promise<boolean> {
+    try {
+      return (await this.api.getMe()).can_read_all_group_messages === true;
+    } catch (err) {
+      console.warn(`[telegram] getMe failed, privacy mode unknown: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
     }
   }
 
@@ -979,11 +1003,12 @@ export class TelegramBot {
     // The pairing branch runs BEFORE the dmPolicy guard so pairing remains
     // self-bootstrapping (otherwise the first DM from a fresh user would
     // be refused before they could even bind).
-    if (text.startsWith('/start ') && message.chat.type === 'private') {
+    const start = parseStartCommand(text, this.botIdentity.username);
+    if (start && message.chat.type === 'private') {
       await this.handleStartWithToken({
         chat: message.chat,
         from: message.from,
-        token: text.slice('/start '.length).trim(),
+        token: start.token,
       });
       return;
     }
@@ -1056,6 +1081,14 @@ export class TelegramBot {
           ? message.entities
           : message.caption_entities;
       userMessage = this.stripBotMention(text, stripEntities);
+      // `/start@<bot>` in a group is the greeting too, never a turn (#2004).
+      if (parseStartCommand(text, this.botIdentity.username)) {
+        await this.emitter.sendSystem(
+          message.chat.id,
+          greetingText(this.systemName, systemLocaleOf(message.from?.language_code)),
+        );
+        return;
+      }
     } else if (hasContent && (await this.handleInboundForEngine(message, true))) {
       return;
     }
@@ -1378,10 +1411,18 @@ export class TelegramBot {
       return;
     }
     if (input.token.length === 0) {
-      // Bare /start with no token = first-time-greeting flow, not pairing.
+      // Bare /start (the START button) = the greeting, never a turn (#2004).
+      // Under `disabled` the bot stays silent in DMs; an unpaired person under
+      // `pairing` is told how to get paired.
+      if (this.dmPolicy === 'disabled') {
+        console.log(`[telegram] bare /start ignored chat=${String(input.chat.id)} policy=disabled`);
+        return;
+      }
+      const isPaired =
+        this.dmPolicy !== 'pairing' || (await this.pairingStore.getDmBinding(input.from.id)) !== undefined;
       await this.emitter.sendSystem(
         input.chat.id,
-        greetingText(this.systemName, systemLocaleOf(input.from.language_code)),
+        greetingText(this.systemName, systemLocaleOf(input.from.language_code), { needsPairing: !isPaired }),
       );
       return;
     }
@@ -1729,6 +1770,22 @@ function telegramDisplayName(user: {
     .trim();
   if (composed.length > 0) return composed;
   return user.username ? `@${user.username}` : 'Telegram User';
+}
+
+/**
+ * `/start`, `/start <token>`, `/start@<bot>` and `/start@<bot> <token>`
+ * (#2004). A `/start@<other bot>` is not ours. Returns the token, empty for a
+ * bare `/start`; undefined when the text is no start command.
+ */
+export function parseStartCommand(
+  text: string,
+  botUsername: string | undefined,
+): { readonly token: string } | undefined {
+  const match = /^\/start(?:@([A-Za-z0-9_]+))?(?:\s+(.*))?$/s.exec(text.trim());
+  if (!match) return undefined;
+  const addressee = match[1];
+  if (addressee && botUsername && addressee.toLowerCase() !== botUsername.toLowerCase()) return undefined;
+  return { token: (match[2] ?? '').trim() };
 }
 
 /** An image read from Telegram, ready for the turn. */

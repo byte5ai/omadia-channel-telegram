@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>byte5 Harness · Telegram Admin</title>
+    <title>omadia · Telegram Admin</title>
     <style>
       :root {
         --bg: #0e1116;
@@ -508,18 +508,18 @@
           el(
             "p",
             { class: "sub" },
-            "Operator-Login für den byte5 Harness Telegram-Channel.",
+            "Operator-Login für den omadia Telegram-Channel.",
           ),
-          el("label", { for: "token" }, "telegram_admin_token"),
+          el("label", { for: "token" }, "Admin-Token"),
           input,
           errBox,
           btn,
           el(
             "div",
             { class: "hint" },
-            "Token wird beim ersten Boot der Middleware geloggt (Suche nach ",
-            el("code", {}, "telegram_admin_token"),
-            "). Alternativ via Vault-Inspection lesbar.",
+            "Das Token steht nie im Log. Setz es in den Einstellungen des Telegram-Plugins im Feld ",
+            el("code", {}, "Admin-Token"),
+            " (dort auch rotierbar) und gib denselben Wert hier ein.",
           ),
         );
         root.appendChild(el("div", { class: "login-screen" }, card));

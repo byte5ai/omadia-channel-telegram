@@ -4,9 +4,9 @@
  *
  * Three modes (see manifest.yaml setup.dm_policy):
  *
- * - `'open'`: any DM passes. Behaviour pre-S+7.6. Existing installs keep
- *   this on idempotent-bootstrap (no rewrite).
- * - `'pairing'` (S+7.6 default for new installs): unbound users are
+ * - `'open'`: any DM passes. Only when set explicitly.
+ * - `'pairing'` (default, and the fallback for a missing or unknown
+ *   value, #1998): unbound users are
  *   refused with a polite "Bitte erst koppeln"-reply that does NOT leak
  *   the pairing UI URL (operator hands out the QR/deeplink out-of-band).
  *   Bound users (DmBinding present) pass.
@@ -33,9 +33,21 @@ const VALID_POLICIES: ReadonlySet<string> = new Set([
   'disabled',
 ]);
 
-export function parseDmPolicy(raw: string | undefined, fallback: DmPolicy): DmPolicy {
-  if (!raw) return fallback;
-  return VALID_POLICIES.has(raw) ? (raw as DmPolicy) : fallback;
+/** The policy a missing, blank or unknown value falls back to: closed, never open (#1998). */
+export const FAIL_CLOSED_DM_POLICY: DmPolicy = 'pairing';
+
+/**
+ * The configured DM policy. Case and surrounding blanks are ignored
+ * (`Pairing`, ` open `). A missing, blank or unknown value is the
+ * fail-closed `pairing`, never `open`: a typo must not let anyone chat with
+ * the bot (byte5ai/omadia#1998). `onInvalid` reports an unknown value.
+ */
+export function parseDmPolicy(raw: unknown, onInvalid?: (raw: string) => void): DmPolicy {
+  if (typeof raw !== 'string' || raw.trim().length === 0) return FAIL_CLOSED_DM_POLICY;
+  const normalised = raw.trim().toLowerCase();
+  if (VALID_POLICIES.has(normalised)) return normalised as DmPolicy;
+  onInvalid?.(raw);
+  return FAIL_CLOSED_DM_POLICY;
 }
 
 export interface DmPolicyDecision {

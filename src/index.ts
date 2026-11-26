@@ -16,6 +16,7 @@ export {
   TelegramApiClient,
   TelegramBot,
   TELEGRAM_PACE_PROFILE,
+  parseStartCommand,
   telegramTurnOrigin,
   telegramUserRef,
   type TelegramBotOptions,
@@ -114,7 +115,9 @@ export {
   type TelegramReadinessLookup,
 } from './telegramReadiness.js';
 
+export { greetingText, groupActivatedText, type GroupActivationFacts } from './systemTexts.js';
 export {
+  FAIL_CLOSED_DM_POLICY,
   evaluateDmPolicy,
   parseDmPolicy,
   type DmPolicy,

@@ -123,17 +123,11 @@ export async function activate(
     );
   }
   const publicBaseUrl = ctx.config.get<string>('telegram_public_base_url');
-  // dmPolicy is the default-pairing safety knob (S+7.6).
-  //
-  // Fallback semantics: 'open' for backward-compat. Pre-S+7.6 installs
-  // have no dm_policy field in their registry config; reading absent →
-  // 'open' preserves the original behaviour ("anyone with the bot
-  // username can DM"). New installs after S+7.6 get an explicit
-  // dm_policy='pairing' written by bootstrapTelegramFromEnv on first
-  // boot, so this fallback only matters for legacy entries.
-  const dmPolicy: DmPolicy = parseDmPolicy(
-    ctx.config.get<string>('dm_policy'),
-    'open',
+  // dmPolicy is the default-pairing safety knob (S+7.6). A missing, blank or
+  // unknown value fails closed to 'pairing' (#1998): an install from before
+  // the field existed, or a typo, never opens the bot to everyone.
+  const dmPolicy: DmPolicy = parseDmPolicy(ctx.config.get<string>('dm_policy'), (raw) =>
+    core.log('warn', `telegram dm_policy "${raw}" is not open, pairing or disabled; using pairing`),
   );
   core.log('info', `telegram dm policy = ${dmPolicy}`);
 
