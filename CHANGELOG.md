@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **The agent's files arrive** (byte5ai/omadia#1993).
+  - **The problem.** The channel sent every attachment by URL. Telegram cannot fetch a `localhost` URL, and with `sendDocument` it fetches only GIF, PDF and ZIP. So Excel and Word files never arrived, and with the default base URL no diagram did either. The answer still said "here is your file".
+  - **How files are sent now.** On a kernel with the attachment read seam (`CoreApi.readAttachment`, channel-sdk 0.3.16, omadia ADR-0222, byte5ai/omadia#2257), a file the kernel serves is read as bytes and uploaded as multipart. JPEG, PNG and WebP up to 10 MB are sent as a photo, everything else as a document. A URL that is not the kernel's is still sent by URL.
+  - **When a file cannot be sent.** If a file does not arrive in any of these ways, the person gets one notice naming the missing files ("Die Datei „…“ konnte nicht zugestellt werden."). The turn history notes `[attachment not delivered: "<name>"]`, so the agent does not refer to the file as delivered.
+  - **Captions** are cut to stay within Telegram's 1024-character caption limit. If Telegram refuses a caption's HTML, the file is sent again once with the caption as plain text, so a caption never costs the file.
+  - **The notice names the file by the kernel's file name**, otherwise by an alt text that is a file name, otherwise by the end of the URL.
+  - **Proactive sends.** A routine or facilitator post still reports `delivered` when its text arrived, because the send contract has no "partly delivered". The missing files are logged and named in the chat.
+  - **Older kernels.** The seam is feature-detected. On a kernel without it, everything goes by URL as before, plus the notice.
+
 ## 0.8.0
 
 - **Long answers arrive in parts** (byte5ai/omadia#1989). An answer over Telegram's 4096-character limit was refused ("message is too long") and the fallback to plain text failed the same way, so the person got an error instead of the answer. The emitter now cuts the text before converting it to HTML, at a paragraph, line or space; every part is valid HTML on its own, and a code block across a cut is closed and opened again. Attachments follow the last part. Only an entity error ("can't parse entities") falls back to plain text now; any other refusal is not retried as plain text. A part never is an empty code block, and text that cannot be cut into valid HTML parts (a long fence line full of `<`) goes out as escaped plain text instead of failing.

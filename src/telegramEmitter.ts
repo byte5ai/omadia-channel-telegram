@@ -32,6 +32,13 @@ import {
 
 import { markdownToTelegramHtml } from './markdownToHtml.js';
 import { splitForTelegram, splitPlainText } from './messageSplit.js';
+import {
+  MAX_CAPTION_SOURCE_LENGTH,
+  attachmentFileName,
+  attachmentsMissingText,
+  isPhotoUpload,
+  type AttachmentReader,
+} from './attachmentDelivery.js';
 import type { SemanticAnswer } from './kernel-types.js';
 import type { TelegramApiClient } from './telegramBot.js';
 
@@ -60,7 +67,13 @@ export interface SpeakerHistoryReader extends SpeakerHistoryStore {
 }
 
 export interface TelegramEmitterOptions {
-  readonly api: Pick<TelegramApiClient, 'sendMessage' | 'sendPhoto' | 'sendDocument'>;
+  readonly api: Pick<TelegramApiClient, 'sendMessage' | 'sendPhoto' | 'sendDocument'> &
+    Partial<Pick<TelegramApiClient, 'uploadPhoto' | 'uploadDocument'>>;
+  /**
+   * The kernel's attachment read seam (#1993). Absent on older kernels: then
+   * every attachment is sent by URL, as before.
+   */
+  readonly readAttachment?: AttachmentReader;
   readonly speakerHistory: SpeakerHistoryReader;
   /** Called once per message sent. */
   readonly onEmit?: (record: EmissionRecord) => void;
@@ -71,6 +84,13 @@ export interface TelegramEmitterOptions {
   readonly nativeIdentity?: boolean;
 }
 
+/** What a sent answer reports back: the attachments that did not arrive (#1993). */
+export interface AnswerDelivery {
+  readonly missingAttachments: readonly string[];
+}
+
+const NOTHING_MISSING: AnswerDelivery = Object.freeze({ missingAttachments: Object.freeze([]) });
+
 export class TelegramEmitter {
   constructor(private readonly opts: TelegramEmitterOptions) {}
 
@@ -78,10 +98,10 @@ export class TelegramEmitter {
    * An agent's answer, or the management layer's notice when the answer's
    * speaker is `system`.
    */
-  async sendAnswer(chatId: number, answer: SemanticAnswer): Promise<void> {
+  async sendAnswer(chatId: number, answer: SemanticAnswer): Promise<AnswerDelivery> {
     if (answer.speaker?.kind === 'system') {
       await this.sendSystem(chatId, answer.systemNotice?.text ?? answer.text);
-      return;
+      return NOTHING_MISSING;
     }
     if (!answer.speaker) {
       // The bot withholds such an answer before it gets here; an emitter that
@@ -100,9 +120,7 @@ export class TelegramEmitter {
     });
     await this.sendText(chatId, text, speaker);
     // Attachments follow the last part of the text.
-    for (const attachment of answer.attachments ?? []) {
-      await this.sendAttachment(chatId, attachment, speaker);
-    }
+    return { missingAttachments: await this.sendAttachments(chatId, answer.attachments, speaker) };
   }
 
   /**
@@ -118,9 +136,7 @@ export class TelegramEmitter {
   ): Promise<number | undefined> {
     this.assertDecorationsDeclared();
     const messageId = await this.sendText(chatId, message.text, 'agent');
-    for (const attachment of message.attachments ?? []) {
-      await this.sendAttachment(chatId, attachment, 'agent');
-    }
+    await this.sendAttachments(chatId, message.attachments, 'agent');
     return messageId;
   }
 
@@ -153,36 +169,107 @@ export class TelegramEmitter {
     return lastId;
   }
 
+  /**
+   * Every attachment, in order. Returns the names of those that did not
+   * arrive; the person has been told about them in one notice (#1993).
+   */
+  private async sendAttachments(
+    chatId: number,
+    attachments: SemanticAnswer['attachments'],
+    speaker: EmissionRecord['speaker'],
+  ): Promise<string[]> {
+    const missing: string[] = [];
+    for (const attachment of attachments ?? []) {
+      const sent = await this.sendAttachment(chatId, attachment, speaker);
+      if (!sent.delivered) missing.push(sent.name);
+    }
+    if (missing.length > 0) {
+      // The send contract has no "partly delivered": the text did go out, so a
+      // proactive send still reports delivered. The log and the notice say
+      // which files are missing.
+      console.warn(`[telegram] chat=${String(chatId)}: ${String(missing.length)} attachment(s) not delivered: ${missing.join(', ')}`);
+      try {
+        await this.sendSystem(chatId, attachmentsMissingText(missing));
+      } catch (err) {
+        console.error(`[telegram] notice about undelivered attachments failed: ${errorMessage(err)}`);
+      }
+    }
+    return missing;
+  }
+
+  /**
+   * One attachment: uploaded when the kernel can read it, by URL when the
+   * URL is not the kernel's. Returns whether it arrived.
+   */
   private async sendAttachment(
     chatId: number,
     attachment: NonNullable<SemanticAnswer['attachments']>[number],
     speaker: EmissionRecord['speaker'],
-  ): Promise<void> {
-    const caption = markdownToTelegramHtml(attachment.altText);
-    try {
-      await this.opts.api.sendPhoto({
-        chat_id: chatId,
-        photo: attachment.url,
-        caption,
-        parse_mode: 'HTML',
-      });
-      this.opts.onEmit?.({ chatId, speaker, kind: 'photo' });
-      return;
-    } catch (err) {
-      console.warn(
-        `[telegram] sendPhoto failed (${attachment.url}): ${errorMessage(err)} — falling back to sendDocument`,
-      );
+  ): Promise<{ readonly delivered: boolean; readonly name: string }> {
+    const caption = markdownToTelegramHtml(attachment.altText.slice(0, MAX_CAPTION_SOURCE_LENGTH));
+    const read = this.opts.readAttachment ? await this.opts.readAttachment(attachment.url) : undefined;
+    const name = attachmentFileName(attachment.url, read?.ok ? read.fileName : undefined, attachment.altText);
+    if (read?.ok) return { name, delivered: await this.uploadAttachment(chatId, attachment.url, read, caption, speaker) };
+    if (read && read.reason !== 'not_kernel_attachment') {
+      console.error(`[telegram] attachment not readable from the kernel (${read.reason}): ${attachment.url}`);
+      return { name, delivered: false };
+    }
+    return { name, delivered: await this.sendAttachmentByUrl(chatId, attachment.url, caption, speaker) };
+  }
+
+  private async uploadAttachment(
+    chatId: number,
+    url: string,
+    read: Extract<Awaited<ReturnType<AttachmentReader>>, { ok: true }>,
+    caption: string,
+    speaker: EmissionRecord['speaker'],
+  ): Promise<boolean> {
+    const { uploadPhoto, uploadDocument } = this.opts.api;
+    if (!uploadPhoto || !uploadDocument) return this.sendAttachmentByUrl(chatId, url, caption, speaker);
+    const file = {
+      bytes: read.bytes,
+      fileName: attachmentFileName(url, read.fileName),
+      ...(read.mediaType ? { mediaType: read.mediaType } : {}),
+    };
+    if (isPhotoUpload(read.mediaType, read.bytes.byteLength)) {
+      try {
+        await withPlainCaptionRetry(caption, (c) => uploadPhoto.call(this.opts.api, { chat_id: chatId, file, ...c }));
+        this.opts.onEmit?.({ chatId, speaker, kind: 'photo' });
+        return true;
+      } catch (err) {
+        console.warn(`[telegram] photo upload failed (${file.fileName}): ${errorMessage(err)} — sending as a document`);
+      }
     }
     try {
-      await this.opts.api.sendDocument({
-        chat_id: chatId,
-        document: attachment.url,
-        caption,
-        parse_mode: 'HTML',
-      });
+      await withPlainCaptionRetry(caption, (c) => uploadDocument.call(this.opts.api, { chat_id: chatId, file, ...c }));
       this.opts.onEmit?.({ chatId, speaker, kind: 'document' });
+      return true;
+    } catch (err) {
+      console.error(`[telegram] document upload failed (${file.fileName}): ${errorMessage(err)}`);
+      return false;
+    }
+  }
+
+  private async sendAttachmentByUrl(
+    chatId: number,
+    url: string,
+    caption: string,
+    speaker: EmissionRecord['speaker'],
+  ): Promise<boolean> {
+    try {
+      await withPlainCaptionRetry(caption, (c) => this.opts.api.sendPhoto({ chat_id: chatId, photo: url, ...c }));
+      this.opts.onEmit?.({ chatId, speaker, kind: 'photo' });
+      return true;
+    } catch (err) {
+      console.warn(`[telegram] sendPhoto failed (${url}): ${errorMessage(err)} — falling back to sendDocument`);
+    }
+    try {
+      await withPlainCaptionRetry(caption, (c) => this.opts.api.sendDocument({ chat_id: chatId, document: url, ...c }));
+      this.opts.onEmit?.({ chatId, speaker, kind: 'document' });
+      return true;
     } catch (err) {
       console.error(`[telegram] sendDocument fallback failed: ${errorMessage(err)}`);
+      return false;
     }
   }
 
@@ -230,6 +317,23 @@ export class TelegramEmitter {
         `undeclared decoration(s) for telegram: ${refused.map((r) => r.id).join(', ')}`,
       );
     }
+  }
+}
+
+/**
+ * Send with the HTML caption; when Telegram refuses its entities, once more
+ * with the caption as plain text, so a caption never costs the file.
+ */
+async function withPlainCaptionRetry<T>(
+  html: string,
+  send: (caption: { caption: string; parse_mode?: 'HTML' }) => Promise<T>,
+): Promise<T> {
+  try {
+    return await send({ caption: html, parse_mode: 'HTML' });
+  } catch (err) {
+    if (!isEntityParseError(errorMessage(err))) throw err;
+    console.warn(`[telegram] caption HTML rejected → retrying with a plain caption. detail=${errorMessage(err)}`);
+    return await send({ caption: stripHtml(html) });
   }
 }
 
