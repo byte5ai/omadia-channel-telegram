@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0
 
 - **Pairing links the Telegram account to a real omadia account** (byte5ai/omadia#1995, omadia ADR-0225 / ADR-0280). Needs kernel PR byte5ai/omadia#2325 (channel-sdk 0.3.19, plugin-api 1.107.0) for the link; older kernels keep the allow-list.
   - **Admin UI.** On a kernel with `CoreApi.channelIdentityLinks` (channel-sdk 0.3.19) the pairing form is a picker of the active omadia accounts (`GET /api/telegram/admin/accounts`, read from the kernel under the operator's own session). `POST /pairings` takes `{ userId }`; the kernel checks the account and the operator and returns a single-use link offer, which the pairing token carries. The free-text form is refused on such a kernel.
