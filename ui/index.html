@@ -594,7 +594,7 @@
       // The kernel links the Telegram account to the omadia account picked
       // here (ADR-0225). The kernel checks the account and your session.
       function renderAccountPairingForm(apiClient, info) {
-        const select = el("select", { required: true });
+        const select = el("select", { id: "account", required: true });
         select.appendChild(el("option", { value: "" }, "Konten werden geladen …"));
         const resultBox = el("div", {});
         const btn = el(
