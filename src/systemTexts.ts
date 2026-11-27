@@ -50,6 +50,35 @@ export function pairedWelcomeText(name: string, identityLabel: string, locale: S
       ].join('\n');
 }
 
+/**
+ * ADR-0225 — the kernel linked the Telegram account to an omadia account.
+ * Only this text says "connected as"; an allow-list pairing never does.
+ */
+export function linkedWelcomeText(name: string, accountName: string, locale: SystemLocale): string {
+  return locale === 'en'
+    ? [
+        `Welcome to the ${name} system!`,
+        '',
+        `Your Telegram account is now connected to the omadia account of ${accountName}. I answer you as that account.`,
+        '',
+        'Just ask me a question, I answer directly.',
+      ].join('\n')
+    : [
+        `Willkommen zum ${name} System!`,
+        '',
+        `Dein Telegram-Konto ist jetzt mit dem omadia-Konto von ${accountName} verbunden. Ich antworte dir als dieses Konto.`,
+        '',
+        'Stell mir einfach eine Frage, ich antworte direkt.',
+      ].join('\n');
+}
+
+/** The kernel refused the link of a pairing (offer used, expired, account gone). Nothing was paired. */
+export function linkFailedText(locale: SystemLocale): string {
+  return locale === 'en'
+    ? 'This pairing link could not connect your account. Nothing was changed. Please ask the operator for a new link.'
+    : 'Dieser Pairing-Link konnte dein Konto nicht verbinden. Es wurde nichts geändert. Bitte lass dir vom Operator einen neuen Link geben.';
+}
+
 export function greetingText(
   name: string,
   locale: SystemLocale,

@@ -48,6 +48,12 @@ export interface DmBinding {
   telegramDisplayName?: string;
   /** ISO-8601 of binding creation. */
   boundAt: string;
+  /**
+   * ADR-0225 — the kernel linked this Telegram account to the omadia account
+   * `harnessIdentityId` (a `users.id`). Absent on allow-list pairings and on
+   * bindings made before 0.9.0, whose `harnessIdentityId` is free text.
+   */
+  accountLinked?: boolean;
 }
 
 export interface GroupActivation {

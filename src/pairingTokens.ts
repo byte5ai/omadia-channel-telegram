@@ -25,6 +25,12 @@ export interface PairingToken {
   harnessIdentityId: string;
   /** Friendly label rendered in the operator UI / DM-confirm message. */
   harnessIdentityLabel: string;
+  /**
+   * The kernel's link offer (ADR-0225). Present when the operator picked an
+   * omadia account: `/start <token>` redeems it and links the sender to that
+   * account. Absent: the pairing only allows the account to chat.
+   */
+  linkOfferId?: string;
   /** Unix-ms creation time. Used for audit + expiry math. */
   createdAt: number;
   /** Unix-ms expiry. Lazy-pruned. */
@@ -39,6 +45,7 @@ export class PairingTokenRegistry {
   issue(input: {
     harnessIdentityId: string;
     harnessIdentityLabel: string;
+    linkOfferId?: string;
   }): PairingToken {
     this.pruneExpired();
     const token = randomTokenString();
@@ -47,6 +54,7 @@ export class PairingTokenRegistry {
       token,
       harnessIdentityId: input.harnessIdentityId,
       harnessIdentityLabel: input.harnessIdentityLabel,
+      ...(input.linkOfferId ? { linkOfferId: input.linkOfferId } : {}),
       createdAt: now,
       expiresAt: now + this.ttlMs,
     };
@@ -71,11 +79,12 @@ export class PairingTokenRegistry {
   }
 
   /** Operator-facing list — no token strings leak (only metadata). */
-  listMetadata(): Array<Omit<PairingToken, 'token'>> {
+  listMetadata(): Array<Omit<PairingToken, 'token' | 'linkOfferId'> & { accountLink: boolean }> {
     this.pruneExpired();
-    return Array.from(this.map.values()).map(({ token: _drop, ...meta }) => {
+    return Array.from(this.map.values()).map(({ token: _drop, linkOfferId: _offer, ...meta }) => {
       void _drop;
-      return meta;
+      void _offer;
+      return { ...meta, accountLink: _offer !== undefined };
     });
   }
 

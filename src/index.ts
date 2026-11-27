@@ -123,7 +123,21 @@ export {
   type TelegramReadinessLookup,
 } from './telegramReadiness.js';
 
-export { greetingText, groupActivatedText, pairedWelcomeText, type GroupActivationFacts } from './systemTexts.js';
+export {
+  greetingText,
+  groupActivatedText,
+  linkedWelcomeText,
+  linkFailedText,
+  pairedWelcomeText,
+  type GroupActivationFacts,
+} from './systemTexts.js';
+export {
+  accountLinksOf,
+  telegramTurnUserId,
+  TELEGRAM_LINK_CHANNEL_TYPE,
+  type AccountLinks,
+  type AccountLinkRefusal,
+} from './accountLinks.js';
 export {
   FAIL_CLOSED_DM_POLICY,
   evaluateDmPolicy,

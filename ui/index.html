@@ -451,6 +451,7 @@
         return {
           info: () => call("/info"),
           listPairings: () => call("/pairings"),
+          listAccounts: () => call("/accounts"),
           issuePairing: (body) =>
             call("/pairings", { method: "POST", body: JSON.stringify(body) }),
           listDmBindings: () => call("/bindings/dm"),
@@ -585,6 +586,96 @@
       // Pairing form + result panel
       // ---------------------------------------------------------------
       function renderPairingForm(apiClient, info) {
+        return info.accountLinking
+          ? renderAccountPairingForm(apiClient, info)
+          : renderAllowListPairingForm(apiClient, info);
+      }
+
+      // The kernel links the Telegram account to the omadia account picked
+      // here (ADR-0225). The kernel checks the account and your session.
+      function renderAccountPairingForm(apiClient, info) {
+        const select = el("select", { id: "account", required: true });
+        select.appendChild(el("option", { value: "" }, "Konten werden geladen …"));
+        const resultBox = el("div", {});
+        const btn = el(
+          "button",
+          { class: "btn-primary", type: "submit", disabled: true },
+          "Pairing-Link erzeugen",
+        );
+        apiClient
+          .listAccounts()
+          .then(({ accounts }) => {
+            clear(select);
+            select.appendChild(el("option", { value: "" }, "Konto wählen …"));
+            for (const a of accounts) {
+              select.appendChild(
+                el("option", { value: a.userId }, `${a.displayName} (${a.email})`),
+              );
+            }
+            btn.disabled = accounts.length === 0;
+            if (accounts.length === 0) showToast("Keine aktiven omadia-Konten gefunden.", "error");
+          })
+          .catch((err) => {
+            clear(select);
+            select.appendChild(el("option", { value: "" }, "Konten nicht verfügbar"));
+            showToast(
+              String(err.message).startsWith("403")
+                ? "Bitte in omadia anmelden, um Konten zu sehen."
+                : err.message,
+              "error",
+            );
+          });
+
+        const form = el(
+          "form",
+          {
+            onsubmit: async (e) => {
+              e.preventDefault();
+              const userId = select.value;
+              if (!userId) {
+                showToast("Bitte ein Konto wählen.", "error");
+                return;
+              }
+              btn.disabled = true;
+              try {
+                const issued = await apiClient.issuePairing({ userId });
+                renderPairingResult(resultBox, issued, info);
+                showToast("Link erstellt — gilt 120 Sek.", "ok");
+              } catch (err) {
+                showToast(err.message, "error");
+              } finally {
+                btn.disabled = false;
+              }
+            },
+          },
+          el(
+            "div",
+            { class: "form-row" },
+            el(
+              "div",
+              {},
+              el(
+                "label",
+                { for: "account" },
+                "omadia-Konto, mit dem das Telegram-Konto verbunden wird",
+              ),
+              select,
+            ),
+          ),
+          btn,
+          resultBox,
+        );
+        return el(
+          "section",
+          { class: "card" },
+          el("h2", {}, "Neues Pairing"),
+          form,
+        );
+      }
+
+      // Kernel without account links: the pairing only allows the Telegram
+      // account to chat. The fields are a note, not an omadia account.
+      function renderAllowListPairingForm(apiClient, info) {
         const idInput = el("input", {
           type: "text",
           placeholder: "z.B. marcel-wege",
@@ -636,7 +727,7 @@
             el(
               "div",
               {},
-              el("label", { for: "id" }, "Kennung (frei, z.B. E-Mail; noch keine Verknüpfung mit einem omadia-Konto)"),
+              el("label", { for: "id" }, "Notiz (frei; dieser Kernel verknüpft keine omadia-Konten, das Pairing erlaubt nur das Chatten)"),
               idInput,
             ),
             el(
@@ -652,7 +743,7 @@
         return el(
           "section",
           { class: "card" },
-          el("h2", {}, "Neues Pairing"),
+          el("h2", {}, "Neues Pairing (nur Freigabe)"),
           form,
         );
       }
@@ -861,7 +952,9 @@
                     class: "mono",
                     style: "color:var(--ink-fade);font-size:11px;",
                   },
-                  b.harnessIdentityId,
+                  b.accountLinked
+                    ? `verbunden mit omadia-Konto ${b.harnessIdentityId}`
+                    : `nur Freigabe (Notiz: ${b.harnessIdentityId})`,
                 ),
               ),
               el("td", {}, fmtDateRelative(b.boundAt)),
