@@ -338,8 +338,20 @@ export async function activate(
   // telegram_admin_token); without one a random token is generated and kept
   // in the vault. It is never logged (live finding 2026-11-23): an operator
   // sets their own in the plugin settings to reach the admin UI or rotate it.
-  const adminToken = await ensureAdminToken(ctx.secrets, (line) => core.log('info', line));
-  if (adminToken && me.username) {
+  // omadia#2355 — on a kernel that resolves operator sessions for plugins the
+  // admin surface uses the operator's omadia session; the bearer token is only
+  // the fallback for older kernels (and is then generated as before).
+  const sessionPrincipal = ctx.operatorAuth?.sessionPrincipal?.bind(ctx.operatorAuth);
+  const operatorOf = sessionPrincipal
+    ? async (cookie: string | undefined) => {
+        const operator = await sessionPrincipal(cookie);
+        return operator ? { email: operator.email } : null;
+      }
+    : undefined;
+  const adminToken = operatorOf
+    ? undefined
+    : await ensureAdminToken(ctx.secrets, (line) => core.log('info', line));
+  if ((operatorOf || adminToken) && me.username) {
     // Mount UI router FIRST (more specific prefix). Express's route
     // registry is first-match-wins per prefix; if the broader admin
     // router (`/api/telegram/admin`) registered first, every request
@@ -380,7 +392,8 @@ export async function activate(
       pairingStore,
       pairingTokens,
       identity: { username: me.username, id: me.id },
-      adminToken,
+      ...(operatorOf ? { operatorOf } : {}),
+      ...(adminToken ? { adminToken } : {}),
       ...(krokiBaseUrl ? { krokiBaseUrl } : {}),
       webhookMode,
       dmPolicy,
@@ -393,13 +406,15 @@ export async function activate(
     );
     core.log(
       'info',
-      `Telegram admin router mounted at ${WEBHOOK_PATH_PREFIX}/admin/* (auth: bearer=telegram_admin_token, mode=${webhookMode}, qr=${krokiBaseUrl ? 'on' : 'off'})`,
+      `Telegram admin router mounted at ${WEBHOOK_PATH_PREFIX}/admin/* (auth: ${operatorOf ? 'operator session' : 'bearer=telegram_admin_token'}, mode=${webhookMode}, qr=${krokiBaseUrl ? 'on' : 'off'})`,
     );
     core.log(
       'info',
-      `telegram admin UI login at ${WEBHOOK_PATH_PREFIX}/admin/ui/ — the token is the "Admin-Token" setup field (vault key telegram_admin_token); set or rotate it in the plugin settings.`,
+      operatorOf
+        ? `telegram admin UI at ${WEBHOOK_PATH_PREFIX}/admin/ui/ — uses the operator's omadia session (omadia#2355).`
+        : `telegram admin UI login at ${WEBHOOK_PATH_PREFIX}/admin/ui/ — the token is the "Admin-Token" setup field (vault key telegram_admin_token); set or rotate it in the plugin settings.`,
     );
-  } else if (!adminToken) {
+  } else if (!operatorOf && !adminToken) {
     core.log(
       'warn',
       'telegram_admin_token could not be generated — ctx.secrets.set is unavailable. Declare permissions.secrets.runtime_write in the manifest so the channel can auto-generate and persist one on first activation. Admin router NOT mounted.',

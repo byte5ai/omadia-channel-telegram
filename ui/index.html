@@ -437,8 +437,11 @@
             },
           });
           if (res.status === 401) {
+            const body = await res.json().catch(() => ({}));
             localStorage.removeItem(TOKEN_KEY);
-            renderLogin("Token ungültig oder abgelaufen.");
+            // omadia#2355 — the kernel authenticates with the operator session.
+            if (body.auth === "session") renderSessionRequired();
+            else renderLogin("Token ungültig oder abgelaufen.");
             throw new Error("unauthorized");
           }
           if (!res.ok) {
@@ -461,6 +464,24 @@
           deactivateGroup: (id) =>
             call(`/bindings/groups/${id}`, { method: "DELETE" }),
         };
+      }
+
+      // ---------------------------------------------------------------
+      // Session required (omadia#2355): no token, sign in to omadia.
+      // ---------------------------------------------------------------
+      function renderSessionRequired() {
+        clear(root);
+        const card = el(
+          "div",
+          { class: "login-card" },
+          el("h1", {}, "Telegram-Admin"),
+          el(
+            "p",
+            { class: "sub" },
+            "Bitte melde dich in omadia an und öffne diese Seite erneut über die Plugin-Verwaltung.",
+          ),
+        );
+        root.appendChild(el("div", { class: "login-screen" }, card));
       }
 
       // ---------------------------------------------------------------
@@ -557,7 +578,9 @@
             `dmPolicy: ${info.dmPolicy}`,
           ),
           el("div", { class: "spacer" }),
-          el(
+          info.auth === "session"
+            ? null
+            : el(
             "button",
             {
               class: "logout",
@@ -609,7 +632,7 @@
             select.appendChild(el("option", { value: "" }, "Konto wählen …"));
             for (const a of accounts) {
               select.appendChild(
-                el("option", { value: a.userId }, `${a.displayName} (${a.email})`),
+                el("option", { value: a.userId }, `${a.displayName} (${a.email || "–"})${a.kind === "person" ? " · Verzeichnis, ohne Web-Login" : ""}`),
               );
             }
             btn.disabled = accounts.length === 0;
@@ -1055,11 +1078,8 @@
       // Bootstrap: try existing token, otherwise show login.
       // ---------------------------------------------------------------
       (async function init() {
-        const t = localStorage.getItem(TOKEN_KEY);
-        if (!t) {
-          renderLogin();
-          return;
-        }
+        // omadia#2355 — try the operator session first (same-origin cookies);
+        // only a kernel without it answers `auth: "bearer"` and gets the form.
         try {
           await api().info();
           renderApp();

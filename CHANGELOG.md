@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.1
+
+- **The admin UI uses the operator's omadia session** (byte5ai/omadia#2355). On a kernel with
+  `ctx.operatorAuth.sessionPrincipal` the admin API authenticates with the session cookie the
+  kernel resolves; no `telegram_admin_token` is asked for or generated, and a cross-site write is
+  refused (403). Kernels without it keep the bearer token and its login form.
+- **Directory people in the picker** (byte5ai/omadia#2335, omadia ADR-0300). On a kernel with the
+  Entra directory the account picker also lists colleagues without a web login
+  (`kind: 'person'`, value `directory:<id>`), marked "Verzeichnis, ohne Web-Login". The value is
+  passed to the kernel unchanged.
+
 ## 0.9.0
 
 - **Pairing links the Telegram account to a real omadia account** (byte5ai/omadia#1995, omadia ADR-0225 / ADR-0280). Needs kernel PR byte5ai/omadia#2325 (channel-sdk 0.3.19, plugin-api 1.107.0) for the link; older kernels keep the allow-list.
