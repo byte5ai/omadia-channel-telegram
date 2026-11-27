@@ -29,6 +29,7 @@ import type { ChatAgent, TurnContextModule } from './kernel-types.js';
 import type { TelegramMembershipEvents } from './membershipEvents.js';
 import { OwnPosts } from './ownPosts.js';
 import { PairingStore } from './pairingStore.js';
+import type { AccountLinks } from './accountLinks.js';
 import type { PairingTokenRegistry } from './pairingTokens.js';
 import type { PersistentSpeakerHistoryStore } from './speakerHistory.js';
 import {
@@ -65,6 +66,8 @@ export interface SharedBotDeps {
   readonly systemName: string;
   readonly pairingStore: PairingStore;
   readonly pairingTokens: PairingTokenRegistry;
+  /** The kernel's account links (ADR-0225); absent on an older kernel. */
+  readonly accountLinks?: AccountLinks | undefined;
   readonly speakerHistory: PersistentSpeakerHistoryStore;
   readonly memberTracker: GroupMemberTracker;
   /** Joins and leaves for the kernel; one instance, so a change seen by several bots goes out once. */
@@ -145,6 +148,7 @@ export function createBotRuntime(
     invalidateRoster: (chatId) => rosterProvider.invalidate(chatId),
     pairingStore,
     pairingTokens: shared.pairingTokens,
+    ...(shared.accountLinks ? { accountLinks: shared.accountLinks } : {}),
     speakerHistory: shared.speakerHistory,
     dmPolicy: shared.dmPolicy,
     systemName: shared.systemName,

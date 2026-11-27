@@ -35,6 +35,7 @@ import {
 import type { ChatAgentBundle } from '@omadia/orchestrator';
 
 import type { TurnContextModule } from './kernel-types.js';
+import { accountLinksOf } from './accountLinks.js';
 import { createTelegramAdminRouter } from './adminRouter.js';
 import {
   createTelegramAgentIdentityProvider,
@@ -153,6 +154,15 @@ export async function activate(
   // members seen, DM bindings, pairing tokens, who spoke where.
   const memberTracker = new GroupMemberTracker(memoryStore);
   const pairingTokens = new PairingTokenRegistry();
+  // ADR-0225 — the kernel links a paired Telegram account to an omadia
+  // account; an older kernel leaves pairing an allow-list.
+  const accountLinks = accountLinksOf(core);
+  core.log(
+    'info',
+    accountLinks
+      ? 'telegram pairing links accounts through the kernel (channelIdentityLinks)'
+      : 'kernel has no channelIdentityLinks — pairing only allows a Telegram account to chat',
+  );
   const pairingStore = new PairingStore(memoryStore);
   const speakerHistory = new PersistentSpeakerHistoryStore(memoryStore);
   core.log('info', 'telegram pairing store ready (memoryStore-backed)');
@@ -189,6 +199,7 @@ export async function activate(
     systemName: parseSystemName(ctx.config.get<string>('system_name')),
     pairingStore,
     pairingTokens,
+    ...(accountLinks ? { accountLinks } : {}),
     speakerHistory,
     memberTracker,
     membershipEvents,
@@ -373,6 +384,7 @@ export async function activate(
       ...(krokiBaseUrl ? { krokiBaseUrl } : {}),
       webhookMode,
       dmPolicy,
+      ...(accountLinks ? { accountLinks } : {}),
     });
     core.registerRouter(
       ctx.agentId,

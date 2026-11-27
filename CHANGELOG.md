@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Pairing links the Telegram account to a real omadia account** (byte5ai/omadia#1995, omadia ADR-0225 / ADR-0280). Needs kernel PR byte5ai/omadia#2325 (channel-sdk 0.3.19, plugin-api 1.107.0) for the link; older kernels keep the allow-list.
+  - **Admin UI.** On a kernel with `CoreApi.channelIdentityLinks` (channel-sdk 0.3.19) the pairing form is a picker of the active omadia accounts (`GET /api/telegram/admin/accounts`, read from the kernel under the operator's own session). `POST /pairings` takes `{ userId }`; the kernel checks the account and the operator and returns a single-use link offer, which the pairing token carries. The free-text form is refused on such a kernel.
+  - **`/start <token>`.** The bot redeems the offer with the sender Telegram attested (`telegram:<id>`, the id its turns carry). Linked: the welcome says the account is connected to the omadia account of <name>, and the kernel runs the person's turns as that account. Refused (offer used or expired, account disabled): nothing is paired and the person is asked for a new link.
+  - **Revoking** a linked DM binding unlinks it in the kernel first; without a valid operator session the binding stays (403). The DM table shows "verbunden mit omadia-Konto …" or "nur Freigabe".
+  - **Older kernels.** The capability is feature-detected (structural mirror in `accountLinks.ts`). Without it the pairing stays the 0.8 DM allow-list with a free-text note, and no text claims a link.
+  - Memory tiers stay keyed per channel; a linked account does not see the web user's memory (ADR-0225).
+
 ## 0.8.1
 
 - **Declares its memory tree.** The manifest declares `permissions.memory.trees: ["pairings"]` (omadia ADR-0256, byte5ai/omadia#2232). On a kernel with ADR-0256, a plugin's `memoryStore@1` changes only the top-level trees it declares and owns, so no other plugin can read or rewrite `/memories/pairings/*`. Older kernels ignore the field, and ADR-0256's kernel keeps `pairings` for this plugin through a dated legacy row until this release is installed, so install order does not matter.

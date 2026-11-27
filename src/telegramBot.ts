@@ -36,11 +36,14 @@ import {
 } from '@omadia/channel-sdk';
 import { resolveAgentForTurn, type ChannelRouteLookup } from './agentResolution.js';
 import { OwnPosts } from './ownPosts.js';
+import { telegramTurnUserId, TELEGRAM_LINK_CHANNEL_TYPE, type AccountLinks } from './accountLinks.js';
 import { evaluateDmPolicy, type DmPolicy } from './dmPolicyGuard.js';
 import {
   DEFAULT_SYSTEM_NAME,
   greetingText,
   groupActivatedText,
+  linkedWelcomeText,
+  linkFailedText,
   pairedWelcomeText,
   parseSystemName,
   systemLocaleOf,
@@ -640,6 +643,8 @@ export interface TelegramBotOptions {
   /** Pairing infrastructure (S+7.6). Both required for /start <token> to work. */
   pairingStore: PairingStore;
   pairingTokens: PairingTokenRegistry;
+  /** The kernel's account links (ADR-0225); without them a pairing only allows the account to chat. */
+  accountLinks?: AccountLinks;
   /** DM auth policy (S+7.6). Defaults to 'pairing' if not specified by caller. */
   dmPolicy?: DmPolicy;
   /** The system the bot's own texts name (`system_name`); default "omadia". */
@@ -737,6 +742,7 @@ export class TelegramBot {
   private readonly pendingReplies: PendingReplyStore;
   private readonly pairingStore: PairingStore;
   private readonly pairingTokens: PairingTokenRegistry;
+  private readonly accountLinks: AccountLinks | undefined;
   private readonly dmPolicy: DmPolicy;
   private readonly systemName: string;
   private readonly botIdentity: { id: number; username: string };
@@ -774,6 +780,7 @@ export class TelegramBot {
     this.paceClock = opts.paceClock;
     this.pairingStore = opts.pairingStore;
     this.pairingTokens = opts.pairingTokens;
+    this.accountLinks = opts.accountLinks;
     this.dmPolicy = opts.dmPolicy ?? 'pairing';
     this.systemName = opts.systemName === undefined ? DEFAULT_SYSTEM_NAME : parseSystemName(opts.systemName);
     this.botIdentity = opts.botIdentity;
@@ -1486,31 +1493,75 @@ export class TelegramBot {
       return;
     }
 
+    const locale = systemLocaleOf(input.from.language_code);
+    const linked = pending.linkOfferId ? await this.redeemAccountLink(input.from, pending.linkOfferId) : undefined;
+    if (linked === null) {
+      // The operator meant a person and the kernel did not link them: no
+      // binding, so nobody chats under a link that does not exist.
+      await this.emitter.sendSystem(input.chat.id, linkFailedText(locale));
+      return;
+    }
+
     const existing = await this.pairingStore.getDmBinding(input.from.id);
-    if (existing && existing.harnessIdentityId !== pending.harnessIdentityId) {
+    const identityId = linked?.userId ?? pending.harnessIdentityId;
+    if (existing && existing.harnessIdentityId !== identityId) {
       console.log(
-        `[telegram] rebinding telegram_user=${String(input.from.id)} from harness=${existing.harnessIdentityId} to harness=${pending.harnessIdentityId}`,
+        `[telegram] rebinding telegram_user=${String(input.from.id)} from harness=${existing.harnessIdentityId} to harness=${identityId}`,
       );
     }
 
     const binding = {
       telegramUserId: input.from.id,
-      harnessIdentityId: pending.harnessIdentityId,
-      harnessIdentityLabel: pending.harnessIdentityLabel,
+      harnessIdentityId: identityId,
+      harnessIdentityLabel: linked?.displayName ?? pending.harnessIdentityLabel,
       ...(input.from.username ? { telegramUsername: input.from.username } : {}),
       telegramDisplayName: telegramDisplayName(input.from),
       boundAt: new Date().toISOString(),
+      ...(linked ? { accountLinked: true } : {}),
     };
     await this.pairingStore.putDmBinding(binding);
 
     console.log(
-      `[telegram] dm pairing bound telegram_user=${String(input.from.id)} (@${input.from.username ?? 'no-username'}) → harness=${pending.harnessIdentityId} (${pending.harnessIdentityLabel})`,
+      `[telegram] dm pairing bound telegram_user=${String(input.from.id)} (@${input.from.username ?? 'no-username'}) → ${linked ? `account ${linked.userId} (linked by the kernel)` : `allow-list note ${pending.harnessIdentityId}`}`,
     );
 
     await this.emitter.sendSystem(
       input.chat.id,
-      pairedWelcomeText(this.systemName, pending.harnessIdentityLabel, systemLocaleOf(input.from.language_code)),
+      linked
+        ? linkedWelcomeText(this.systemName, linked.displayName, locale)
+        : pairedWelcomeText(this.systemName, pending.harnessIdentityLabel, locale),
     );
+  }
+
+  /**
+   * ADR-0225 — redeem the kernel's link offer for the sender of `/start`.
+   * The sender is the account Telegram attested; the kernel decides the rest.
+   * `null` when no link was made.
+   */
+  private async redeemAccountLink(
+    from: TelegramUser,
+    offerId: string,
+  ): Promise<{ userId: string; displayName: string } | null> {
+    if (!this.accountLinks) {
+      console.warn('[telegram] pairing carries a link offer but the kernel offers no account links — not paired');
+      return null;
+    }
+    try {
+      const result = await this.accountLinks.redeemLink({
+        channelType: TELEGRAM_LINK_CHANNEL_TYPE,
+        channelUserId: telegramTurnUserId(from.id),
+        offerId,
+        displayName: telegramDisplayName(from),
+      });
+      if (result.ok) return { userId: result.link.userId, displayName: result.link.displayName };
+      console.warn(`[telegram] kernel refused the account link for telegram_user=${String(from.id)}: ${result.reason}`);
+      return null;
+    } catch (err) {
+      console.error(
+        `[telegram] account link for telegram_user=${String(from.id)} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
   }
 
   /**
@@ -1565,9 +1616,7 @@ export class TelegramBot {
     const sessionScope = formatSessionScope(conversationScope);
     // Not a principal: the user key of traces and the pairing store, kept in
     // its historic spelling so no history splits. Routing uses `turnPrincipal`.
-    const userId = input.from
-      ? `telegram:${String(input.from.id)}`
-      : undefined;
+    const userId = input.from ? telegramTurnUserId(input.from.id) : undefined;
 
     // W5 memory-ACL — state WHERE this turn came from so the kernel can scope
     // chat-context memory to it. Built from the same `ScopeId` the session scope
