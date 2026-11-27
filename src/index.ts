@@ -158,6 +158,7 @@ export {
 } from './pairingStore.js';
 
 export {
+  createAdminAuth,
   createTelegramAdminRouter,
   type TelegramAdminRouterDeps,
 } from './adminRouter.js';

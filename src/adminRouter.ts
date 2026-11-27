@@ -13,10 +13,11 @@
  *   GET    /bindings/groups    list group activations
  *   DELETE /bindings/groups/:id  deactivate a group
  *
- * Auth: Bearer-Token from `telegram_admin_token` vault entry. Plugin
- * resolves it at activate() and passes it to this factory; operator
- * captures the token from the boot log on first install (auto-generated
- * by bootstrapTelegramFromEnv).
+ * Auth (omadia#2355): the operator's omadia session. On a kernel with
+ * `ctx.operatorAuth.sessionPrincipal` every request needs a signed-in
+ * operator (session cookie, resolved by the kernel); a cross-site write is
+ * refused. Only on an older kernel without it does the router fall back to
+ * the `telegram_admin_token` bearer from the plugin vault.
  *
  * Account links (ADR-0225): on a kernel with `CoreApi.channelIdentityLinks`
  * a pairing names an omadia account (`userId`), and the kernel validates it
@@ -47,8 +48,13 @@ export interface TelegramAdminRouterDeps {
   pairingStore: PairingStore;
   pairingTokens: PairingTokenRegistry;
   identity: { username: string; id: number };
-  /** Random per-install token. Operator reads from boot log / vault. */
-  adminToken: string;
+  /**
+   * The operator behind a request's cookie header (kernel
+   * `ctx.operatorAuth.sessionPrincipal`). Present → session auth, no bearer.
+   */
+  operatorOf?: (cookieHeader: string | undefined) => Promise<{ email: string } | null>;
+  /** Bearer fallback for kernels without `operatorOf` (vault `telegram_admin_token`). */
+  adminToken?: string;
   /** Optional kroki base URL for QR rendering. Undefined → qrSvg null. */
   krokiBaseUrl?: string;
   /** Channel runtime mode reflected back in /info — UI status panel. */
@@ -77,21 +83,7 @@ export function createTelegramAdminRouter(
   // JSON body parser scoped to admin routes — webhook router has its own.
   router.use(express.json({ limit: '64kb' }));
 
-  // Bearer auth — token sourced from the plugin's vault entry, not from
-  // the kernel ADMIN_TOKEN. Self-contained.
-  router.use((req: Request, res: Response, next: NextFunction) => {
-    const header = req.headers['authorization'];
-    if (typeof header !== 'string' || !header.startsWith('Bearer ')) {
-      res.status(401).json({ error: 'unauthorized' });
-      return;
-    }
-    const supplied = header.slice('Bearer '.length).trim();
-    if (!constantTimeEqualString(supplied, deps.adminToken)) {
-      res.status(401).json({ error: 'unauthorized' });
-      return;
-    }
-    next();
-  });
+  router.use(createAdminAuth(deps));
 
   // -------------------------------------------------------------------
   // GET /info — status snapshot for the UI (bot identity, mode, policy).
@@ -106,6 +98,7 @@ export function createTelegramAdminRouter(
       webhookMode: deps.webhookMode,
       qrEnabled: Boolean(deps.krokiBaseUrl),
       accountLinking: deps.accountLinks !== undefined,
+      auth: deps.operatorOf ? 'session' : 'bearer',
     });
   });
 
@@ -293,4 +286,59 @@ function constantTimeEqualString(a: string, b: string): boolean {
   } catch {
     return false;
   }
+}
+
+const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/**
+ * A write the browser marks as cross-site is refused even with a valid
+ * session: the session cookie is `SameSite=Lax`, and this keeps a forged
+ * form or fetch from another site out on top of that.
+ */
+function isCrossSiteWrite(req: Request): boolean {
+  if (!MUTATING.has(req.method)) return false;
+  const site = req.headers['sec-fetch-site'];
+  if (typeof site === 'string') return site !== 'same-origin' && site !== 'none';
+  const origin = req.headers['origin'];
+  if (typeof origin !== 'string' || origin === '') return false;
+  try {
+    return new URL(origin).host !== req.headers['host'];
+  } catch {
+    return true;
+  }
+}
+
+/** omadia#2355 — operator session when the kernel offers it, else the vault bearer. */
+export function createAdminAuth(
+  deps: Pick<TelegramAdminRouterDeps, 'operatorOf' | 'adminToken'>,
+): (req: Request, res: Response, next: NextFunction) => void {
+  const operatorOf = deps.operatorOf;
+  if (operatorOf) {
+    return (req, res, next) => {
+      if (isCrossSiteWrite(req)) {
+        res.status(403).json({ error: 'cross_site' });
+        return;
+      }
+      operatorOf(req.headers.cookie)
+        .then((operator) => {
+          if (!operator) {
+            res.status(401).json({ error: 'no_session', auth: 'session' });
+            return;
+          }
+          next();
+        })
+        .catch(() => res.status(401).json({ error: 'no_session', auth: 'session' }));
+    };
+  }
+  const adminToken = deps.adminToken;
+  return (req, res, next) => {
+    const header = req.headers['authorization'];
+    const supplied =
+      typeof header === 'string' && header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : '';
+    if (!adminToken || supplied === '' || !constantTimeEqualString(supplied, adminToken)) {
+      res.status(401).json({ error: 'unauthorized', auth: 'bearer' });
+      return;
+    }
+    next();
+  };
 }
