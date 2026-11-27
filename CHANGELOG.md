@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.1
 
 - **Declares its memory tree.** The manifest declares `permissions.memory.trees: ["pairings"]` (omadia ADR-0256, byte5ai/omadia#2232). On a kernel with ADR-0256, a plugin's `memoryStore@1` changes only the top-level trees it declares and owns, so no other plugin can read or rewrite `/memories/pairings/*`. Older kernels ignore the field, and ADR-0256's kernel keeps `pairings` for this plugin through a dated legacy row until this release is installed, so install order does not matter.
 - **The agent's files arrive** (byte5ai/omadia#1993).
